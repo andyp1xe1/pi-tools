@@ -1,0 +1,12 @@
+{
+  "name": "pi-nix-tools",
+  "private": true,
+  "version": "0.0.1",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./extensions"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  }
+}

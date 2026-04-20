@@ -1,0 +1,539 @@
+[
+  {
+    "id": "t01_ytdlp_version",
+    "prompt": "Give me the usable yt-dlp version on this machine. Return one short line only.",
+    "elapsed_sec": 10.48,
+    "returncode": 0,
+    "final_text": "yt-dlp not found",
+    "usage": {
+      "input": 112,
+      "output": 9,
+      "cacheRead": 3328,
+      "cacheWrite": 0,
+      "totalTokens": 3449,
+      "cost": {
+        "input": 0.00028000000000000003,
+        "output": 0.000135,
+        "cacheRead": 0.000832,
+        "cacheWrite": 0,
+        "total": 0.0012469999999999998
+      }
+    },
+    "tool_calls": [
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "if command -v yt-dlp >/dev/null 2>&1; then yt-dlp --version; else echo 'yt-dlp not found'; fi",
+          "timeout": 10
+        }
+      }
+    ],
+    "bash_commands": [
+      "if command -v yt-dlp >/dev/null 2>&1; then yt-dlp --version; else echo 'yt-dlp not found'; fi"
+    ],
+    "ensure_dev_shell_calls": [],
+    "used_nix_develop": false,
+    "used_python": false,
+    "used_bun": false,
+    "used_node": false,
+    "used_npm": false,
+    "used_jq": false,
+    "used_ytdlp": true,
+    "raw_path": "/tmp/pi-bench-runs/t01_ytdlp_version.jsonl",
+    "stderr_path": "/tmp/pi-bench-runs/t01_ytdlp_version.stderr.txt"
+  },
+  {
+    "id": "t02_ffmpeg_version",
+    "prompt": "Give me the usable ffmpeg version on this machine. Return one short line only.",
+    "elapsed_sec": 5.73,
+    "returncode": 0,
+    "final_text": "ffmpeg not found",
+    "usage": {
+      "input": 103,
+      "output": 8,
+      "cacheRead": 3328,
+      "cacheWrite": 0,
+      "totalTokens": 3439,
+      "cost": {
+        "input": 0.0002575,
+        "output": 0.00012,
+        "cacheRead": 0.000832,
+        "cacheWrite": 0,
+        "total": 0.0012095
+      }
+    },
+    "tool_calls": [
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "if command -v ffmpeg >/dev/null 2>&1; then ffmpeg -version | head -n 1; else echo 'ffmpeg not found'; fi",
+          "timeout": 10
+        }
+      }
+    ],
+    "bash_commands": [
+      "if command -v ffmpeg >/dev/null 2>&1; then ffmpeg -version | head -n 1; else echo 'ffmpeg not found'; fi"
+    ],
+    "ensure_dev_shell_calls": [],
+    "used_nix_develop": false,
+    "used_python": false,
+    "used_bun": false,
+    "used_node": false,
+    "used_npm": false,
+    "used_jq": false,
+    "used_ytdlp": false,
+    "raw_path": "/tmp/pi-bench-runs/t02_ffmpeg_version.jsonl",
+    "stderr_path": "/tmp/pi-bench-runs/t02_ffmpeg_version.stderr.txt"
+  },
+  {
+    "id": "t03_node_version",
+    "prompt": "Give me the usable node version on this machine. Return one short line only.",
+    "elapsed_sec": 27.71,
+    "returncode": 0,
+    "final_text": "v24.14.0",
+    "usage": {
+      "input": 907,
+      "output": 10,
+      "cacheRead": 3200,
+      "cacheWrite": 0,
+      "totalTokens": 4117,
+      "cost": {
+        "input": 0.0022675,
+        "output": 0.00015000000000000001,
+        "cacheRead": 0.0007999999999999999,
+        "cacheWrite": 0,
+        "total": 0.0032175
+      }
+    },
+    "tool_calls": [
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "node -v || true",
+          "timeout": 10
+        }
+      },
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "find ~/dev/pi-agent-shells -maxdepth 2 -name flake.nix 2>/dev/null | sed 's#^#/##'",
+          "timeout": 10
+        }
+      },
+      {
+        "name": "ensure_dev_shell",
+        "arguments": {
+          "name": "node-basic",
+          "cliPackages": [
+            "nodejs"
+          ]
+        }
+      },
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "nix develop <home>/dev/pi-agent-shells/node-basic -c node -v",
+          "timeout": 120
+        }
+      }
+    ],
+    "bash_commands": [
+      "node -v || true",
+      "find ~/dev/pi-agent-shells -maxdepth 2 -name flake.nix 2>/dev/null | sed 's#^#/##'",
+      "nix develop <home>/dev/pi-agent-shells/node-basic -c node -v"
+    ],
+    "ensure_dev_shell_calls": [
+      {
+        "name": "node-basic",
+        "cliPackages": [
+          "nodejs"
+        ]
+      }
+    ],
+    "used_nix_develop": true,
+    "used_python": false,
+    "used_bun": false,
+    "used_node": true,
+    "used_npm": false,
+    "used_jq": false,
+    "used_ytdlp": false,
+    "raw_path": "/tmp/pi-bench-runs/t03_node_version.jsonl",
+    "stderr_path": "/tmp/pi-bench-runs/t03_node_version.stderr.txt"
+  },
+  {
+    "id": "t04_npm_react",
+    "prompt": "Use npm to print the latest react version. Return one short line only.",
+    "elapsed_sec": 16.11,
+    "returncode": 0,
+    "final_text": "19.2.5",
+    "usage": {
+      "input": 194,
+      "output": 9,
+      "cacheRead": 3456,
+      "cacheWrite": 0,
+      "totalTokens": 3659,
+      "cost": {
+        "input": 0.000485,
+        "output": 0.000135,
+        "cacheRead": 0.000864,
+        "cacheWrite": 0,
+        "total": 0.001484
+      }
+    },
+    "tool_calls": [
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "npm view react version",
+          "timeout": 20
+        }
+      },
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "find ~/dev/pi-agent-shells -maxdepth 2 -name flake.nix 2>/dev/null | sed 's#^<home>/dev/pi-agent-shells/##' | cut -d/ -f1 | sort -u",
+          "timeout": 20
+        }
+      },
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "nix develop ~/dev/pi-agent-shells/node-basic -c npm view react version",
+          "timeout": 120
+        }
+      }
+    ],
+    "bash_commands": [
+      "npm view react version",
+      "find ~/dev/pi-agent-shells -maxdepth 2 -name flake.nix 2>/dev/null | sed 's#^<home>/dev/pi-agent-shells/##' | cut -d/ -f1 | sort -u",
+      "nix develop ~/dev/pi-agent-shells/node-basic -c npm view react version"
+    ],
+    "ensure_dev_shell_calls": [],
+    "used_nix_develop": true,
+    "used_python": false,
+    "used_bun": false,
+    "used_node": true,
+    "used_npm": true,
+    "used_jq": false,
+    "used_ytdlp": false,
+    "raw_path": "/tmp/pi-bench-runs/t04_npm_react.jsonl",
+    "stderr_path": "/tmp/pi-bench-runs/t04_npm_react.stderr.txt"
+  },
+  {
+    "id": "t05_npm_vite",
+    "prompt": "Use npm to print the latest vite version. Return one short line only.",
+    "elapsed_sec": 25.93,
+    "returncode": 0,
+    "final_text": "8.0.9",
+    "usage": {
+      "input": 103,
+      "output": 9,
+      "cacheRead": 3584,
+      "cacheWrite": 0,
+      "totalTokens": 3696,
+      "cost": {
+        "input": 0.0002575,
+        "output": 0.000135,
+        "cacheRead": 0.000896,
+        "cacheWrite": 0,
+        "total": 0.0012885000000000001
+      }
+    },
+    "tool_calls": [
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "npm view vite version",
+          "timeout": 20
+        }
+      },
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "find ~/dev/pi-agent-shells -maxdepth 2 -name flake.nix -print 2>/dev/null | sed 's#^<home>/dev/pi-agent-shells/##' | sort",
+          "timeout": 20
+        }
+      },
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "nix develop ~/dev/pi-agent-shells/node-basic -c npm view vite version",
+          "timeout": 120
+        }
+      }
+    ],
+    "bash_commands": [
+      "npm view vite version",
+      "find ~/dev/pi-agent-shells -maxdepth 2 -name flake.nix -print 2>/dev/null | sed 's#^<home>/dev/pi-agent-shells/##' | sort",
+      "nix develop ~/dev/pi-agent-shells/node-basic -c npm view vite version"
+    ],
+    "ensure_dev_shell_calls": [],
+    "used_nix_develop": true,
+    "used_python": false,
+    "used_bun": false,
+    "used_node": true,
+    "used_npm": true,
+    "used_jq": false,
+    "used_ytdlp": false,
+    "raw_path": "/tmp/pi-bench-runs/t05_npm_vite.jsonl",
+    "stderr_path": "/tmp/pi-bench-runs/t05_npm_vite.stderr.txt"
+  },
+  {
+    "id": "t06_python_requests_title",
+    "prompt": "Use Python requests to fetch https://example.com and return only the HTML <title> text.",
+    "elapsed_sec": 15.67,
+    "returncode": 0,
+    "final_text": "Example Domain",
+    "usage": {
+      "input": 617,
+      "output": 18,
+      "cacheRead": 3456,
+      "cacheWrite": 0,
+      "totalTokens": 4091,
+      "cost": {
+        "input": 0.0015425,
+        "output": 0.00027,
+        "cacheRead": 0.000864,
+        "cacheWrite": 0,
+        "total": 0.0026765
+      }
+    },
+    "tool_calls": [
+      {
+        "name": "ensure_dev_shell",
+        "arguments": {
+          "name": "python-requests",
+          "pythonPackages": [
+            "requests"
+          ]
+        }
+      },
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "nix develop <home>/dev/pi-agent-shells/python-requests -c python - <<'PY'\nimport requests, re\nhtml = requests.get('https://example.com', timeout=20).text\nm = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)\nprint(m.group(1).strip() if m else '')\nPY",
+          "timeout": 60
+        }
+      }
+    ],
+    "bash_commands": [
+      "nix develop <home>/dev/pi-agent-shells/python-requests -c python - <<'PY'\nimport requests, re\nhtml = requests.get('https://example.com', timeout=20).text\nm = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)\nprint(m.group(1).strip() if m else '')\nPY"
+    ],
+    "ensure_dev_shell_calls": [
+      {
+        "name": "python-requests",
+        "pythonPackages": [
+          "requests"
+        ]
+      }
+    ],
+    "used_nix_develop": true,
+    "used_python": true,
+    "used_bun": false,
+    "used_node": false,
+    "used_npm": false,
+    "used_jq": false,
+    "used_ytdlp": false,
+    "raw_path": "/tmp/pi-bench-runs/t06_python_requests_title.jsonl",
+    "stderr_path": "/tmp/pi-bench-runs/t06_python_requests_title.stderr.txt"
+  },
+  {
+    "id": "t07_bun_version",
+    "prompt": "Use bun to print the bun version only.",
+    "elapsed_sec": 28.87,
+    "returncode": 0,
+    "final_text": "1.3.11",
+    "usage": {
+      "input": 515,
+      "output": 9,
+      "cacheRead": 3840,
+      "cacheWrite": 0,
+      "totalTokens": 4364,
+      "cost": {
+        "input": 0.0012875,
+        "output": 0.000135,
+        "cacheRead": 0.0009599999999999999,
+        "cacheWrite": 0,
+        "total": 0.0023825
+      }
+    },
+    "tool_calls": [
+      {
+        "name": "ensure_dev_shell",
+        "arguments": {
+          "name": "bun"
+        }
+      },
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "find ~/dev/pi-agent-shells -maxdepth 2 -name flake.nix 2>/dev/null | sed 's#^'$HOME'/dev/pi-agent-shells/##' | sort | head -200"
+        }
+      },
+      {
+        "name": "read",
+        "arguments": {
+          "path": "<home>/dev/pi-agent-shells/node-basic/flake.nix"
+        }
+      },
+      {
+        "name": "ensure_dev_shell",
+        "arguments": {
+          "name": "bun-basic",
+          "cliPackages": [
+            "bun"
+          ]
+        }
+      },
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "nix develop <home>/dev/pi-agent-shells/bun-basic -c bun --version",
+          "timeout": 120
+        }
+      }
+    ],
+    "bash_commands": [
+      "find ~/dev/pi-agent-shells -maxdepth 2 -name flake.nix 2>/dev/null | sed 's#^'$HOME'/dev/pi-agent-shells/##' | sort | head -200",
+      "nix develop <home>/dev/pi-agent-shells/bun-basic -c bun --version"
+    ],
+    "ensure_dev_shell_calls": [
+      {
+        "name": "bun"
+      },
+      {
+        "name": "bun-basic",
+        "cliPackages": [
+          "bun"
+        ]
+      }
+    ],
+    "used_nix_develop": true,
+    "used_python": false,
+    "used_bun": true,
+    "used_node": false,
+    "used_npm": false,
+    "used_jq": false,
+    "used_ytdlp": false,
+    "raw_path": "/tmp/pi-bench-runs/t07_bun_version.jsonl",
+    "stderr_path": "/tmp/pi-bench-runs/t07_bun_version.stderr.txt"
+  },
+  {
+    "id": "t08_jq_extract",
+    "prompt": "Use jq to extract key b from this JSON literal: {\"a\":1,\"b\":2}. Return only the value.",
+    "elapsed_sec": 2.32,
+    "returncode": 0,
+    "final_text": "2",
+    "usage": {
+      "input": 3345,
+      "output": 5,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 3350,
+      "cost": {
+        "input": 0.0083625,
+        "output": 7.500000000000001e-05,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0.0084375
+      }
+    },
+    "tool_calls": [],
+    "bash_commands": [],
+    "ensure_dev_shell_calls": [],
+    "used_nix_develop": false,
+    "used_python": false,
+    "used_bun": false,
+    "used_node": false,
+    "used_npm": false,
+    "used_jq": false,
+    "used_ytdlp": false,
+    "raw_path": "/tmp/pi-bench-runs/t08_jq_extract.jsonl",
+    "stderr_path": "/tmp/pi-bench-runs/t08_jq_extract.stderr.txt"
+  },
+  {
+    "id": "t09_download_subtitle",
+    "prompt": "Download only the English subtitle file for https://youtu.be/<video-id> into /tmp/pi-bench and return only the saved file path.",
+    "elapsed_sec": 14.87,
+    "returncode": 0,
+    "final_text": null,
+    "usage": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 0,
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      }
+    },
+    "tool_calls": [
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "command -v yt-dlp || true\nls -d ~/dev/pi-agent-shells/* 2>/dev/null || true",
+          "timeout": 10
+        }
+      }
+    ],
+    "bash_commands": [
+      "command -v yt-dlp || true\nls -d ~/dev/pi-agent-shells/* 2>/dev/null || true"
+    ],
+    "ensure_dev_shell_calls": [],
+    "used_nix_develop": false,
+    "used_python": false,
+    "used_bun": false,
+    "used_node": false,
+    "used_npm": false,
+    "used_jq": false,
+    "used_ytdlp": true,
+    "raw_path": "/tmp/pi-bench-runs/t09_download_subtitle.jsonl",
+    "stderr_path": "/tmp/pi-bench-runs/t09_download_subtitle.stderr.txt"
+  },
+  {
+    "id": "t10_rg_version",
+    "prompt": "Give me the usable rg version on this machine. Return one short line only.",
+    "elapsed_sec": 8.81,
+    "returncode": 0,
+    "final_text": "ripgrep 15.1.0",
+    "usage": {
+      "input": 182,
+      "output": 12,
+      "cacheRead": 3200,
+      "cacheWrite": 0,
+      "totalTokens": 3394,
+      "cost": {
+        "input": 0.00045500000000000006,
+        "output": 0.00018,
+        "cacheRead": 0.0007999999999999999,
+        "cacheWrite": 0,
+        "total": 0.001435
+      }
+    },
+    "tool_calls": [
+      {
+        "name": "bash",
+        "arguments": {
+          "command": "rg --version | head -n 1"
+        }
+      }
+    ],
+    "bash_commands": [
+      "rg --version | head -n 1"
+    ],
+    "ensure_dev_shell_calls": [],
+    "used_nix_develop": false,
+    "used_python": false,
+    "used_bun": false,
+    "used_node": false,
+    "used_npm": false,
+    "used_jq": false,
+    "used_ytdlp": false,
+    "raw_path": "/tmp/pi-bench-runs/t10_rg_version.jsonl",
+    "stderr_path": "/tmp/pi-bench-runs/t10_rg_version.stderr.txt"
+  }
+]
