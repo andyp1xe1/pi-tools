@@ -1,29 +1,26 @@
 ---
 name: nixos-dev-shells
-description: NixOS shell and tool selection guidance. Use when a task depends on a CLI, runtime, or library that may not be installed, when a command is missing, or when deciding whether to use the host PATH, a project flake, or a reusable shell under ~/dev/pi-agent-shells.
+description: NixOS shell selection guidance. Use when a task depends on tools or packages that may not be available on the host, when a command is missing, or when choosing between the host, a project flake, and a reusable shell under ~/dev/pi-agent-shells.
 ---
 
 # NixOS Dev Shells
 
-Use this skill when environment setup matters.
+Use this skill when a task depends on tools or packages that may not be available on the host.
 
-## Core rules
+## Rules
 
 - This machine is NixOS.
 - Do not assume tools, runtimes, or libraries are globally installed.
-- Do not treat the presence of Python or Bun as proof that the needed packages are available.
-- Do not suggest apt, yum, brew, or global pip installs.
-- If a known dedicated CLI fits the task, prefer that CLI over ad-hoc scripting.
-- If the requested CLI already works directly on the host and the task is a simple one-off command, use it directly.
+- Prefer a dedicated CLI over scripting when one fits.
+- Use scripting only when a suitable CLI does not fit the task.
+- If the needed CLI already works on the host and the task is simple, use it directly.
 
-## Shell selection order
+## Shell order
 
 1. For project work, inspect `./flake.nix` first.
-2. If a project shell exists, prefer `devShells.<system>.pi`, then `devShells.default`.
-3. For general reusable tasks, reuse an existing shell under `~/dev/pi-agent-shells/<name>` when one fits.
-4. Only create a new reusable shell when no suitable existing shell is available.
-
-## Preferred execution pattern
+2. Prefer `devShells.<system>.pi`, then `devShells.default`.
+3. Otherwise reuse a fitting shell under `~/dev/pi-agent-shells/<name>`.
+4. Only create a new reusable shell if none fits.
 
 For one-off commands, prefer:
 
@@ -31,27 +28,14 @@ For one-off commands, prefer:
 nix develop <target> -c <command>
 ```
 
+If a command is missing, follow the shell order above and retry inside the chosen shell.
+
 ## Reusable shells
 
-When a reusable shell is needed, use the `ensure_dev_shell` tool.
-
-- `cliPackages`: nixpkgs package attribute names like `jq`, `yt-dlp`, `ffmpeg`
-- `pythonPackages`: `python3Packages` attribute names like `requests`, `beautifulsoup4`
-- `bunPackages`: Bun dependency names like `hono`, `zod`
-
 Use `ensure_dev_shell` only for reusable shells under `~/dev/pi-agent-shells/<name>`.
-For project-specific work, prefer editing the project `flake.nix` instead.
+For project-specific work, prefer editing the project `flake.nix`.
 
-## Missing command recovery
+- `cliPackages`: nixpkgs package names
+- `pythonPackages`: `python3Packages` names
+- `bunPackages`: Bun package names
 
-If a command is missing:
-
-1. Check whether the project flake already provides it.
-2. Otherwise check for a suitable reusable shell in `~/dev/pi-agent-shells`.
-3. Otherwise create a minimal reusable shell with `ensure_dev_shell`.
-4. Retry the command inside that shell.
-
-## Scripting
-
-Use scripting only after ruling out a suitable dedicated CLI, or when scripting is clearly the better tool.
-If scripting is needed, first ensure the runtime and packages are available through a flake shell.

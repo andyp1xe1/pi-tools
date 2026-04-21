@@ -1,10 +1,13 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { createLocalBashOperations, getAgentDir, isBashToolResult, withFileMutationQueue } from "@mariozechner/pi-coding-agent";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 
 const STATS_FILE = join(getAgentDir(), "extensions", "pi-nix-tools-missing-tools.json");
+const DEV_SHELLS_DIR = join(homedir(), "dev", "pi-agent-shells");
 const NIX_CONFIG_SUGGESTION_THRESHOLD = 5;
+const MAX_SHELL_HINTS = 6;
 
 type CommandSource = "bash-tool" | "user-bash";
 
@@ -65,11 +68,74 @@ function isMissingCommandFailure(exitCode: number | undefined, output: string): 
   return exitCode === 127 || /command not found/i.test(output) || /exec: .*: not found/i.test(output);
 }
 
-function buildHint(executable: string, stat: MissingToolStat | undefined): string {
-  const suggestion = (stat?.count ?? 0) >= NIX_CONFIG_SUGGESTION_THRESHOLD
-    ? " If this keeps coming up, it may be worth suggesting that the user add it to their Nix config."
+type ShellContext = {
+  hasProjectFlake: boolean;
+  matchingShells: string[];
+};
+
+function fuzzyKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function fuzzySubstringScore(needle: string, haystack: string): number {
+  if (!needle || !haystack) return 0;
+  if (haystack.includes(needle)) return needle.length + 100;
+
+  for (let length = needle.length - 1; length >= 3; length -= 1) {
+    for (let start = 0; start + length <= needle.length; start += 1) {
+      if (haystack.includes(needle.slice(start, start + length))) return length;
+    }
+  }
+
+  return 0;
+}
+
+async function getShellContext(executable: string, cwd: string): Promise<ShellContext> {
+  const hasProjectFlake = await readFile(join(cwd, "flake.nix"), "utf8")
+    .then(() => true)
+    .catch(() => false);
+
+  const needle = fuzzyKey(executable);
+  const minScore = Math.max(3, Math.ceil(needle.length * 0.6));
+  const entries = await readdir(DEV_SHELLS_DIR, { withFileTypes: true }).catch(() => []);
+  const matches: Array<{ shellName: string; score: number }> = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    const shellName = entry.name;
+    const flakePath = join(DEV_SHELLS_DIR, shellName, "flake.nix");
+    const nameScore = fuzzySubstringScore(needle, fuzzyKey(shellName));
+
+    let contentScore = 0;
+    if (nameScore < minScore) {
+      const flakeContent = await readFile(flakePath, "utf8").catch(() => "");
+      contentScore = fuzzySubstringScore(needle, fuzzyKey(flakeContent));
+    }
+
+    const score = Math.max(nameScore, contentScore);
+    if (score >= minScore) {
+      matches.push({ shellName, score });
+    }
+  }
+
+  matches.sort((a, b) => b.score - a.score || a.shellName.localeCompare(b.shellName));
+
+  return {
+    hasProjectFlake,
+    matchingShells: matches.slice(0, MAX_SHELL_HINTS).map((match) => match.shellName),
+  };
+}
+
+function buildHint(executable: string, stat: MissingToolStat | undefined, shellContext: ShellContext): string {
+  const projectFlake = shellContext.hasProjectFlake ? "yes" : "no";
+  const shellList = shellContext.matchingShells.length > 0
+    ? ` Matching reusable shells: ${shellContext.matchingShells.join(", ")}.`
     : "";
-  return `Nix env hint: ${executable} is missing in the current environment. Treat this as a shell-selection problem: try the project flake first, then a suitable shell under ~/dev/pi-agent-shells.${suggestion}`;
+  const suggestion = (stat?.count ?? 0) >= NIX_CONFIG_SUGGESTION_THRESHOLD
+    ? " If it keeps coming up, consider suggesting it for the user's Nix config."
+    : "";
+  return `Nix env hint: ${executable} is missing here. Project flake: ${projectFlake}.${shellList} Try the project flake first, then a fitting reusable shell.${suggestion}`;
 }
 
 export default function commandTracker(pi: ExtensionAPI) {
@@ -133,7 +199,7 @@ export default function commandTracker(pi: ExtensionAPI) {
     await loadStats();
   });
 
-  pi.on("tool_result", async (event) => {
+  pi.on("tool_result", async (event, ctx) => {
     if (!isBashToolResult(event)) return;
 
     const command = typeof event.input.command === "string" ? event.input.command : "";
@@ -147,11 +213,12 @@ export default function commandTracker(pi: ExtensionAPI) {
 
     await recordMissingExecutable(executable, command, "bash-tool");
     const stat = stats?.executables[executable];
+    const shellContext = await getShellContext(executable, ctx.cwd);
 
     pi.sendMessage(
       {
         customType: "pi-nix-tools-hint",
-        content: buildHint(executable, stat),
+        content: buildHint(executable, stat, shellContext),
         display: false,
         details: {
           kind: "missing-command",
