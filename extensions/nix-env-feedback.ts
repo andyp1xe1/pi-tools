@@ -4,6 +4,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 const STATS_FILE = join(getAgentDir(), "extensions", "pi-nix-tools-missing-tools.json");
+const NIX_CONFIG_SUGGESTION_THRESHOLD = 5;
 
 type CommandSource = "bash-tool" | "user-bash";
 
@@ -65,9 +66,10 @@ function isMissingCommandFailure(exitCode: number | undefined, output: string): 
 }
 
 function buildHint(executable: string, stat: MissingToolStat | undefined): string {
-  const previous = Math.max(0, (stat?.count ?? 0) - 1);
-  const history = previous > 0 ? `${executable} was missing ${previous} time(s) before this. ` : "";
-  return `Nix env hint: ${history}Prefer using an existing flake shell or the ensure_dev_shell tool before retrying ${executable}. Reusable shells live under ~/dev/pi-agent-shells/<name>, while project-specific work should use the project root flake.`;
+  const suggestion = (stat?.count ?? 0) >= NIX_CONFIG_SUGGESTION_THRESHOLD
+    ? " If this keeps coming up, it may be worth suggesting that the user add it to their Nix config."
+    : "";
+  return `Nix env hint: ${executable} is missing in the current environment. Treat this as a shell-selection problem: try the project flake first, then a suitable shell under ~/dev/pi-agent-shells.${suggestion}`;
 }
 
 export default function commandTracker(pi: ExtensionAPI) {

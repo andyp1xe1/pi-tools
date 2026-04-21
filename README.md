@@ -4,7 +4,7 @@ Small pi package for NixOS-oriented behavior.
 
 ## Current contents
 
-- `extensions/nix-env-policy.ts`: appends concise NixOS guidance about preferring existing CLIs, not assuming runtimes/libs are installed, and using flake shells.
+- `skills/nixos-dev-shells/`: on-demand NixOS environment guidance for choosing between host tools, project flakes, and reusable shells.
 - `extensions/nix-env-feedback.ts`: tracks only missing executable failures, sends a hidden steering hint after missing-command bash failures, and adds `/cmdstats [query]` for missing-tool stats.
 - `extensions/dev-shell-manager.ts`: registers an `ensure_dev_shell` tool for creating minimal reusable flake dev shells from `cliPackages`, `pythonPackages`, and `bunPackages` inputs.
 
@@ -27,7 +27,7 @@ Or add the path to `packages` in `~/.pi/agent/settings.json` or `.pi/settings.js
 ## Notes
 
 - Behavior is intentionally simple:
-  - baseline NixOS shell guidance is added before each agent run
+  - NixOS environment guidance now lives in the `nixos-dev-shells` skill instead of being injected into every chat
   - if a command fails because an executable is missing, pi sends a hidden steer hint telling the model to use an existing flake shell or `ensure_dev_shell`
 - Shell location convention:
   - project tasks: use the project root `./flake.nix`

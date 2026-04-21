@@ -4,7 +4,11 @@
   "version": "0.0.1",
   "keywords": ["pi-package"],
   "pi": {
-    "extensions": ["./extensions"]
+    "extensions": [
+      "./extensions/dev-shell-manager.ts",
+      "./extensions/nix-env-feedback.ts"
+    ],
+    "skills": ["./skills"]
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*"
