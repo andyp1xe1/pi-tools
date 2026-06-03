@@ -16,19 +16,15 @@ Small local pi package for Moss's pi extensions and skills.
 
 ## Use
 
-Global install:
+Clone the repo, then install it globally:
 
 ```bash
 pi install <path-to-clone>
 ```
 
-Or add the path to `packages` in `~/.pi/agent/settings.json` or `.pi/settings.json`.
+Or add the clone path to `packages` in `~/.pi/agent/settings.json` or `.pi/settings.json`.
 
-In `~/nix-config`, this package should be listed as:
-
-```nix
-"<path-to-clone>"
-```
+If you manage pi via a Nix config, list the clone path under the package's `packages` entry.
 
 ## Development
 
