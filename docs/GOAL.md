@@ -26,8 +26,8 @@ Important design stance:
 - Org-like syntax/semantics: yes.
 - Emacs as a **source** (read agenda/notes from a running Emacs via `emacsclient`, import `.org` files): yes — see the `emacs` provider in `pi-pkm`.
 - Emacs as a hard runtime dependency: no — every feature must work with Emacs absent.
-- Org-mode export (writing `.org` back, round-tripping changes): a target, not a constraint.
-- Pi as the only interface: no. The core must stay portable so other frontends (CLI, web, future editors) can plug in.
+- Two-way interop with Emacs/org from inside pi (mark TODO done, reschedule, edit headings, capture a new entry, write `.org` back): yes — the provider contract already reserves `markDone`, and the rest will follow. Pi should be a real client of the data, not a read-only viewer.
+- Pi as the only interface: no. The core must stay portable so other frontends (CLI, web, future editors) can plug in and perform the same operations.
 
 Suggested experiments:
 
@@ -105,7 +105,7 @@ Goal: support Telegram/sharing/archival without coupling the design to Telegram.
 Current related extensions (the in-pi experiments that will feed the eventual core):
 
 - `latex-renderer/` — `render_latex` tool plus a TUI message renderer that turns block LaTeX into inline PNGs. Validates the "rich block embedded in a chat stream" primitive.
-- `pi-pkm/` — agenda widget + pane with a pluggable provider model (`sample`, `emacs`). Validates the "structured task data, multiple sources, TUI-first surface" primitive and proves the **Emacs-as-source / not-as-runtime** stance.
+- `pi-pkm/` — agenda widget + pane with a pluggable provider model (`sample`, `emacs`). Currently read-only; next steps include implementing `markDone` and other write-back operations against the emacs provider so pi can act on org entries (close, reschedule, edit) without ever opening Emacs.
 
 Working principle:
 
