@@ -1,0 +1,22 @@
+#+title: Pi PKM Rich Agenda Test
+#+category: pkmtest
+
+* TODO [#A] Write provider contract                                      :pkm:design:
+SCHEDULED: <2026-06-03 Wed 09:00-10:00>
+Test direct local Org tags on a scheduled TODO item.
+
+* WAIT Review Emacs JSON agenda bridge                                :agenda:emacs:
+SCHEDULED: <2026-06-04 Thu 11:15-12:00>
+This should expose local tags from the heading, not inherited properties.
+
+* TODO Capture source block result workflow                              :code:result:
+SCHEDULED: <2026-06-05 Fri 14:30-16:00>
+#+begin_src sh
+printf 'hello from pi-pkm fixture\n'
+#+end_src
+
+* TODO Deadline-only agenda row                                      :deadline:review:
+DEADLINE: <2026-06-06 Sat 12:00>
+
+* DONE Completed item with local tags                                     :done:archive:
+SCHEDULED: <2026-06-07 Sun 16:00-16:30>
