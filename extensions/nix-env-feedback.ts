@@ -1,10 +1,15 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { createLocalBashOperations, getAgentDir, isBashToolResult, withFileMutationQueue } from "@mariozechner/pi-coding-agent";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  createLocalBashOperations,
+  getAgentDir,
+  isBashToolResult,
+  withFileMutationQueue,
+} from "@earendil-works/pi-coding-agent";
 
-const STATS_FILE = join(getAgentDir(), "extensions", "pi-nix-tools-missing-tools.json");
+const STATS_FILE = join(getAgentDir(), "extensions", "pi-tools-missing-tools.json");
 const DEV_SHELLS_DIR = join(homedir(), "dev", "pi-agent-shells");
 const NIX_CONFIG_SUGGESTION_THRESHOLD = 5;
 const MAX_SHELL_HINTS = 6;
@@ -129,12 +134,14 @@ async function getShellContext(executable: string, cwd: string): Promise<ShellCo
 
 function buildHint(executable: string, stat: MissingToolStat | undefined, shellContext: ShellContext): string {
   const projectFlake = shellContext.hasProjectFlake ? "yes" : "no";
-  const shellList = shellContext.matchingShells.length > 0
-    ? ` Matching reusable shells: ${shellContext.matchingShells.join(", ")}.`
-    : "";
-  const suggestion = (stat?.count ?? 0) >= NIX_CONFIG_SUGGESTION_THRESHOLD
-    ? " If it keeps coming up, consider suggesting it for the user's Nix config."
-    : "";
+  const shellList =
+    shellContext.matchingShells.length > 0
+      ? ` Matching reusable shells: ${shellContext.matchingShells.join(", ")}.`
+      : "";
+  const suggestion =
+    (stat?.count ?? 0) >= NIX_CONFIG_SUGGESTION_THRESHOLD
+      ? " If it keeps coming up, consider suggesting it for the user's Nix config."
+      : "";
   return `Nix env hint: ${executable} is missing here. Project flake: ${projectFlake}.${shellList} Try the project flake first, then a fitting reusable shell.${suggestion}`;
 }
 
@@ -217,7 +224,7 @@ export default function commandTracker(pi: ExtensionAPI) {
 
     pi.sendMessage(
       {
-        customType: "pi-nix-tools-hint",
+        customType: "pi-tools-hint",
         content: buildHint(executable, stat, shellContext),
         display: false,
         details: {
@@ -231,7 +238,7 @@ export default function commandTracker(pi: ExtensionAPI) {
     );
   });
 
-  pi.on("user_bash", async (event) => {
+  pi.on("user_bash", async (_event) => {
     const local = createLocalBashOperations();
     let output = "";
 

@@ -1,9 +1,9 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { withFileMutationQueue } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 
 const ensureDevShellSchema = Type.Object({
   name: Type.String({
@@ -11,17 +11,20 @@ const ensureDevShellSchema = Type.Object({
   }),
   cliPackages: Type.Optional(
     Type.Array(Type.String(), {
-      description: "nixpkgs package attribute names to include directly in pkgs.packages, e.g. ['yt-dlp', 'ffmpeg'] or ['jq'].",
+      description:
+        "nixpkgs package attribute names to include directly in pkgs.packages, e.g. ['yt-dlp', 'ffmpeg'] or ['jq'].",
     }),
   ),
   pythonPackages: Type.Optional(
     Type.Array(Type.String(), {
-      description: "nixpkgs python3Packages attribute names, e.g. ['requests', 'beautifulsoup4']. If provided, Python is included in the shell.",
+      description:
+        "nixpkgs python3Packages attribute names, e.g. ['requests', 'beautifulsoup4']. If provided, Python is included in the shell.",
     }),
   ),
   bunPackages: Type.Optional(
     Type.Array(Type.String(), {
-      description: "Bun package names for a generated package.json, e.g. ['hono', 'zod']. If provided, bun is included in the shell.",
+      description:
+        "Bun package names for a generated package.json, e.g. ['hono', 'zod']. If provided, bun is included in the shell.",
     }),
   ),
 });
@@ -34,11 +37,13 @@ type EnsureDevShellInput = {
 };
 
 function normalizeName(name: string): string {
-  return name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "shell";
+  return (
+    name
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "shell"
+  );
 }
 
 function uniqueSorted(values: string[] | undefined): string[] {
@@ -46,7 +51,7 @@ function uniqueSorted(values: string[] | undefined): string[] {
 }
 
 function hasOwnKey<T extends object>(value: T, key: PropertyKey): boolean {
-  return Object.prototype.hasOwnProperty.call(value, key);
+  return Object.hasOwn(value, key);
 }
 
 function buildFlakeContent(input: EnsureDevShellInput): string {
@@ -100,22 +105,19 @@ function buildReadmeContent(input: EnsureDevShellInput, target: string, packageJ
   const cliPackages = uniqueSorted(input.cliPackages);
   const pythonPackages = uniqueSorted(input.pythonPackages);
   const bunPackages = uniqueSorted(input.bunPackages);
-  const lines = [
-    `# ${input.name}`,
-    "",
-    "## Usage",
-    "",
-    "```bash",
-    `nix develop ${target} -c <command>`,
-    "```",
-  ];
+  const lines = [`# ${input.name}`, "", "## Usage", "", "```bash", `nix develop ${target} -c <command>`, "```"];
 
   if (cliPackages.length > 0) {
     lines.push("", "## cli packages", "", ...cliPackages.map((pkg) => `- ${pkg}`));
   }
 
   if (hasOwnKey(input, "pythonPackages")) {
-    lines.push("", "## python", "", pythonPackages.length > 0 ? "Python plus requested pythonPackages are included." : "Python runtime is included.");
+    lines.push(
+      "",
+      "## python",
+      "",
+      pythonPackages.length > 0 ? "Python plus requested pythonPackages are included." : "Python runtime is included.",
+    );
     if (pythonPackages.length > 0) {
       lines.push("", ...pythonPackages.map((pkg) => `- ${pkg}`));
     }
@@ -136,11 +138,15 @@ function buildReadmeContent(input: EnsureDevShellInput, target: string, packageJ
 
 function buildPackageJsonContent(name: string, bunPackages: string[]): string {
   const dependencies = Object.fromEntries(bunPackages.map((pkg) => [pkg, "latest"]));
-  return `${JSON.stringify({
-    name: normalizeName(name),
-    private: true,
-    dependencies,
-  }, null, 2)}\n`;
+  return `${JSON.stringify(
+    {
+      name: normalizeName(name),
+      private: true,
+      dependencies,
+    },
+    null,
+    2,
+  )}\n`;
 }
 
 export default function devShellManager(pi: ExtensionAPI) {
@@ -156,7 +162,7 @@ export default function devShellManager(pi: ExtensionAPI) {
       "Pass nixpkgs package attribute names in cliPackages, python3Packages attribute names in pythonPackages, and bun dependency names in bunPackages.",
     ],
     parameters: ensureDevShellSchema,
-    async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, rawParams, _signal, _onUpdate, _ctx) {
       const params = rawParams as EnsureDevShellInput;
       const shellName = normalizeName(params.name);
       const baseDir = join(homedir(), "dev", "pi-agent-shells", shellName);
@@ -166,14 +172,18 @@ export default function devShellManager(pi: ExtensionAPI) {
       const target = baseDir;
 
       const cliPackages = uniqueSorted(params.cliPackages);
-      const pythonPackages = uniqueSorted(params.pythonPackages);
       const bunPackages = uniqueSorted(params.bunPackages);
       const needsPython = hasOwnKey(params, "pythonPackages");
       const needsBun = hasOwnKey(params, "bunPackages");
 
       if (cliPackages.length === 0 && !needsPython && !needsBun) {
         return {
-          content: [{ type: "text", text: "No shell contents requested. Provide at least one of cliPackages, pythonPackages, or bunPackages." }],
+          content: [
+            {
+              type: "text",
+              text: "No shell contents requested. Provide at least one of cliPackages, pythonPackages, or bunPackages.",
+            },
+          ],
           details: { created: false },
         };
       }
@@ -201,10 +211,7 @@ export default function devShellManager(pi: ExtensionAPI) {
         await writeFile(readmePath, readmeContent, "utf8");
       });
 
-      const notes = [
-        `Created reusable dev shell at ${flakePath}.`,
-        `Use it with: nix develop ${target} -c <command>`,
-      ];
+      const notes = [`Created reusable dev shell at ${flakePath}.`, `Use it with: nix develop ${target} -c <command>`];
       if (packageJsonWritten) notes.push(`Generated ${packageJsonPath} for bun dependencies.`);
 
       return {
