@@ -1,4 +1,4 @@
-# Pi Extension Lab Goal
+# pi tools goal
 
 We want to explore a richer, more Emacs/org-inspired way to produce and interact with featureful documents and task data. Pi is the first interface we're building it inside, but the long-term shape is a separate program with its own core, and pi as one frontend among several.
 
