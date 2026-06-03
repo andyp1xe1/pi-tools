@@ -1,16 +1,42 @@
 {
-  "name": "pi-nix-tools",
+  "name": "pi-tools",
   "private": true,
   "version": "0.0.1",
-  "keywords": ["pi-package"],
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
   "pi": {
     "extensions": [
-      "./extensions/dev-shell-manager.ts",
-      "./extensions/nix-env-feedback.ts"
+      "./extensions/*.ts"
     ],
-    "skills": ["./skills"]
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "check": "biome check .",
+    "fix": "biome check --write .",
+    "format": "biome format --write .",
+    "lint": "biome lint ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.16"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
   }
 }
