@@ -8,6 +8,12 @@ A small package of [pi](https://github.com/earendil-works/pi-coding-agent) exten
 
 The project is intentionally experimental — see [`docs/GOAL.md`](docs/GOAL.md) for the broader direction.
 
+<p align="center">
+  <img src="docs/images/showcase.png" alt="LaTeX renderer and org-agenda inside pi's TUI" width="720" />
+  <br />
+  <em>Tail of <code>/latex-renderer-test</code> with the <code>/org-agenda</code> pane focused below.</em>
+</p>
+
 ## Extensions
 
 | Extension | What it does | Docs |
