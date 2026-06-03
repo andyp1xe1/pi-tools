@@ -4,38 +4,48 @@
 
 # pi-tools
 
-Small local pi package for Moss's pi extensions and skills.
+A small package of [pi](https://github.com/earendil-works/pi-coding-agent) extensions and skills, mostly aimed at making pi feel more at home on a NixOS box and pushing toward a richer, org-mode-flavored document experience inside the TUI.
 
-## Contents
+The project is intentionally experimental — see [`docs/GOAL.md`](docs/GOAL.md) for the broader direction.
 
-- `extensions/dev-shell-manager.ts`: registers `ensure_dev_shell` for creating reusable Nix flake dev shells.
-- `extensions/nix-env-feedback.ts`: tracks missing executable failures and gives hidden Nix shell guidance after missing-command bash failures.
-- `extensions/latex-renderer.ts`: registers `render_latex` and `/latex-renderer-test`.
-- `extensions/pi-pkm.ts`: registers `/org-agenda` and `Alt+X` for the PKM agenda TUI.
-- `skills/nixos-dev-shells/`: NixOS shell selection guidance.
+## Extensions
 
-## Use
+| Extension | What it does | Docs |
+| --- | --- | --- |
+| `dev-shell-manager` | Creates reusable Nix flake dev shells on demand under `~/dev/pi-agent-shells/<name>`. | [docs/dev-shell-manager.md](docs/dev-shell-manager.md) |
+| `nix-env-feedback` | Watches bash failures for missing commands and steers the model toward an existing reusable shell. Adds `/cmdstats`. | [docs/nix-env-feedback.md](docs/nix-env-feedback.md) |
+| `latex-renderer` | `render_latex` tool that displays Markdown with block LaTeX rendered as inline PNGs. Adds `/latex-renderer-test`. | [docs/latex-renderer.md](docs/latex-renderer.md) |
+| `pi-pkm` | Org-style agenda pane in the TUI with pluggable providers (sample + emacs). Adds `/org-agenda` and `Alt+X`. | [docs/pi-pkm.md](docs/pi-pkm.md) |
 
-Clone the repo, then install it globally:
+## Skills
+
+- `skills/nixos-dev-shells/` — selection rules for host vs. project flake vs. reusable shell. Paired with the two nix extensions above.
+
+## Install
+
+Clone the repo, then install it globally as a pi package:
 
 ```bash
 pi install <path-to-clone>
 ```
 
-Or add the clone path to `packages` in `~/.pi/agent/settings.json` or `.pi/settings.json`.
+Or add the clone path to the `packages` array in `~/.pi/agent/settings.json` (global) or `.pi/settings.json` (per-project). If you manage pi via Nix, list the clone path under the same `packages` entry in your config.
 
-If you manage pi via a Nix config, list the clone path under the package's `packages` entry.
-
-## Development
+## Develop
 
 ```bash
-npm run fix
-npm run check
+npm install
+npm run fix     # biome format + lint --write
+npm run check   # biome check
 ```
 
-Smoke tests:
+Smoke tests (run each extension in isolation, no session, no tools, no network):
 
 ```bash
 pi --no-session --no-tools --offline -e ./extensions/pi-pkm.ts -p /org-agenda
 pi --no-session --no-tools --offline -e ./extensions/latex-renderer.ts -p /latex-renderer-test
 ```
+
+## License
+
+GPL-3.0 — see [LICENSE](LICENSE).
