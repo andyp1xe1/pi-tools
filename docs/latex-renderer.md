@@ -50,13 +50,7 @@ npm run fix
 
 Formatting/linting uses the local `@biomejs/biome` dev dependency from `package.json`; no global formatter/linter is required.
 
-A project `flake.nix` is included for renderer experiments and optional backends:
-
-```bash
-nix develop
-```
-
-It provides Node/npm, TeX tools, Ghostscript, Poppler (`pdftocairo`), resvg, and MuPDF.
+The renderer shells out to `latex` and `dvipng`, so those need to be available on PATH (provided by the `texlive` and `dvipng` nixpkgs attributes on NixOS).
 
 Reload pi after changes:
 
