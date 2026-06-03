@@ -1,13 +1,12 @@
 # Pi Extension Lab Goal
 
-We want to explore a richer, more Emacs/org-inspired way for pi to produce and interact with featureful documents, without depending on Emacs as the runtime.
+We want to explore a richer, more Emacs/org-inspired way to produce and interact with featureful documents and task data. Pi is the first interface we're building it inside, but the long-term shape is a separate program with its own core, and pi as one frontend among several.
 
-The plan is intentionally experimental first:
+The plan is intentionally experimental first, in three rough phases:
 
-1. Build small, direct pi extensions in `~/.pi/agent/extensions/`.
-2. Use each extension to test one primitive or interaction pattern.
-3. Keep notes on what feels good, what is awkward, and what pi's TUI/API can realistically support.
-4. Only after enough experiments, architect a coherent rich-document/org-like system from the proven ideas.
+1. **Now — pi extensions.** Build small, direct pi extensions in this repo. Use each to test one primitive or interaction pattern (rich rendering, agenda, source blocks, …). Keep notes on what feels good, what is awkward, and what pi's TUI/API can realistically support.
+2. **Next — consolidate.** Once enough primitives are proven, architect a coherent rich-document / agenda / PKM system from the experiments.
+3. **Later — extract a core.** Lift that system out of `extensions/` into its own program with a well-defined data model and protocol. Pi becomes one interface to that core (probably the primary one for an LLM workflow), but the core should also be usable from a CLI, a web frontend, scripts, or another editor.
 
 The desired end-state is not “random rich output slop.” It is a pi-native document/workspace substrate with an org-like spirit:
 
@@ -25,8 +24,10 @@ Important design stance:
 
 - Emacs-like spirit: yes.
 - Org-like syntax/semantics: yes.
-- Emacs as a hard dependency: no.
-- Emacs/org-mode interop as an optional backend/import/export path: maybe later.
+- Emacs as a **source** (read agenda/notes from a running Emacs via `emacsclient`, import `.org` files): yes — see the `emacs` provider in `pi-pkm`.
+- Emacs as a hard runtime dependency: no — every feature must work with Emacs absent.
+- Org-mode export (writing `.org` back, round-tripping changes): a target, not a constraint.
+- Pi as the only interface: no. The core must stay portable so other frontends (CLI, web, future editors) can plug in.
 
 Suggested experiments:
 
@@ -101,10 +102,11 @@ Test converting rich docs into shareable artifacts:
 
 Goal: support Telegram/sharing/archival without coupling the design to Telegram.
 
-Current related extension:
+Current related extensions (the in-pi experiments that will feed the eventual core):
 
-- `latex-renderer/` implements `render_latex`, a focused LaTeX block renderer for pi TUI/custom messages. It is a useful primitive, but not the final rich-doc architecture.
+- `latex-renderer/` — `render_latex` tool plus a TUI message renderer that turns block LaTeX into inline PNGs. Validates the "rich block embedded in a chat stream" primitive.
+- `pi-pkm/` — agenda widget + pane with a pluggable provider model (`sample`, `emacs`). Validates the "structured task data, multiple sources, TUI-first surface" primitive and proves the **Emacs-as-source / not-as-runtime** stance.
 
 Working principle:
 
-Build experiments first. Do not prematurely architect. Once we know the primitives, consolidate into a coherent pi-native rich document system.
+Build experiments first. Do not prematurely architect. Once we know the primitives, consolidate them into a coherent rich-document / agenda system inside pi, then extract that system into a standalone core with pi as one of its interfaces.
