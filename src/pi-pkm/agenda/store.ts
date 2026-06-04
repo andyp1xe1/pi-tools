@@ -1,6 +1,7 @@
 import { endOfWeek, startOfWeek } from "./dates.ts";
+import { builtinProvider } from "./providers/builtin.ts";
 import { emacsAgendaProvider } from "./providers/emacs.ts";
-import { sampleAgendaProvider } from "./providers/sample.ts";
+import { todoTxtProvider } from "./providers/todo-txt.ts";
 import type { AgendaItem, AgendaProvider, AgendaSurface } from "./types.ts";
 
 export type AgendaProviderFilter = "all" | string;
@@ -15,6 +16,7 @@ export class AgendaStore {
   items: AgendaItem[] = [];
   selectedIndex = 0;
   scrollRow = 0;
+  cwd = process.cwd();
 
   constructor(providers: AgendaProvider[]) {
     for (const provider of providers) this.providers.set(provider.id, provider);
@@ -29,8 +31,9 @@ export class AgendaStore {
     return this.providers.get(filter)?.label ?? filter;
   }
 
-  async load(filter: AgendaProviderFilter = this.providerFilter): Promise<void> {
+  async load(filter: AgendaProviderFilter = this.providerFilter, cwd = this.cwd): Promise<void> {
     this.providerFilter = filter;
+    this.cwd = cwd;
     if (filter === "all") {
       await this.loadAllProviders();
     } else {
@@ -39,8 +42,8 @@ export class AgendaStore {
     this.applyFilter();
   }
 
-  async reload(): Promise<void> {
-    await this.load(this.providerFilter);
+  async reload(cwd = this.cwd): Promise<void> {
+    await this.load(this.providerFilter, cwd);
   }
 
   toggleSurface(): AgendaSurface {
@@ -139,7 +142,7 @@ export class AgendaStore {
   }
 
   private query() {
-    return { start: startOfWeek(new Date()), end: endOfWeek(new Date()) };
+    return { start: startOfWeek(new Date()), end: endOfWeek(new Date()), cwd: this.cwd };
   }
 }
 
@@ -152,4 +155,4 @@ function compareAgendaItems(a: AgendaItem, b: AgendaItem): number {
   );
 }
 
-export const agendaStore = new AgendaStore([sampleAgendaProvider, emacsAgendaProvider]);
+export const agendaStore = new AgendaStore([builtinProvider, todoTxtProvider, emacsAgendaProvider]);

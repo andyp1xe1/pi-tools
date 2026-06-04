@@ -21,7 +21,7 @@ The project is intentionally experimental — see [`docs/GOAL.md`](docs/GOAL.md)
 | `dev-shell-manager` | Creates reusable Nix flake dev shells on demand under `~/dev/pi-agent-shells/<name>`.                                                                                                                                | [docs/dev-shell-manager.md](docs/dev-shell-manager.md) |
 | `nix-env-feedback`  | Watches bash failures for missing commands and steers the model toward an existing reusable shell. Adds `/cmdstats`.                                                                                                 | [docs/nix-env-feedback.md](docs/nix-env-feedback.md)   |
 | `latex-renderer`    | `render_latex` tool that displays Markdown with block LaTeX rendered as inline PNGs. Adds `/latex-renderer-test`.                                                                                                    | [docs/latex-renderer.md](docs/latex-renderer.md)       |
-| `pi-pkm`            | Org-style agenda pane in the TUI with pluggable providers (`todo.txt` + emacs), project-local persistence, refresh, and DONE write-back. Adds `/org-agenda`, `/org-agenda-refresh`, `/org-agenda-done`, and `Alt+X`. | [docs/pi-pkm.md](docs/pi-pkm.md)                       |
+| `pi-pkm`            | Org-style agenda pane in the TUI with pluggable providers (`builtin`, `todo.txt`, and emacs), project-local persistence, refresh, and DONE write-back. Adds `/org-agenda`, `/org-agenda-refresh`, `/org-agenda-done`, and `Alt+X`. | [docs/pi-pkm.md](docs/pi-pkm.md)                       |
 
 ## Skills
 
