@@ -55,7 +55,7 @@ programs.pi-tools = {
 
 The module writes `~/.pi/agent/settings.json`, installs `piCliPackage` when provided, and adds the Nix-built `pi-tools` package to pi's package list.
 
-By default this is an opinionated pi-tools distro config: theme `gruvbox-dark`, bundled pi-tools extensions/skills/themes, and `npm:pi-web-access`. Override with `theme = null;`, `recommendedPackages = [];`, `extraPackages = [...]`, and raw `settings = {...};` as needed.
+By default this is an opinionated pi-tools distro config: theme `gruvbox-dark`, bundled pi-tools extensions/skills/themes, git-sourced `pi-web-access`, and the git-sourced Telegram bridge package. Override with `theme = null;`, `recommendedPackages = [];`, `extraPackages = [...]`, and raw `settings = {...};` as needed.
 
 ## Develop
 
@@ -74,6 +74,8 @@ pi --no-session --no-tools --offline -e ./extensions/latex-renderer.ts -p /latex
 
 ## References
 
+- Recommended package `git:github.com/nicobailon/pi-web-access`: [`nicobailon/pi-web-access`](https://github.com/nicobailon/pi-web-access).
+- Recommended package `git:github.com/badlogic/pi-telegram`: [`badlogic/pi-telegram`](https://github.com/badlogic/pi-telegram).
 - `skills/btca-local/` is vendored from [`davis7dotsh/better-context`](https://github.com/davis7dotsh/better-context), source skill: [`skills/btca-local/SKILL.md`](https://raw.githubusercontent.com/davis7dotsh/better-context/refs/heads/main/skills/btca-local/SKILL.md).
 
 ## License

@@ -37,7 +37,10 @@ in {
 
     recommendedPackages = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = ["npm:pi-web-access"];
+      default = [
+        "git:github.com/nicobailon/pi-web-access"
+        "git:github.com/badlogic/pi-telegram"
+      ];
       description = "Default recommended pi package entries. Set to [] to disable the bundled recommendations.";
     };
 
@@ -52,8 +55,7 @@ in {
       type = lib.types.listOf lib.types.str;
       default = [];
       example = [
-        "\${inputs.pi-telegram}"
-        "npm:pi-web-access"
+        "npm:some-pi-package"
       ];
       description = "Additional pi package entries to place before the pi-tools package.";
     };
