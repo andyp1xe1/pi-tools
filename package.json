@@ -12,6 +12,9 @@
     ],
     "skills": [
       "./skills"
+    ],
+    "themes": [
+      "./themes"
     ]
   },
   "scripts": {
