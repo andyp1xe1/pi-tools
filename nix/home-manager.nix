@@ -80,5 +80,13 @@ in {
     home.file = {
       ".pi/agent/settings.json".text = builtins.toJSON (baseSettings // cfg.settings);
     };
+
+    home.activation.piToolsInitNpmPrefix = lib.hm.dag.entryAfter ["writeBoundary"] ''
+      prefix="${config.home.homeDirectory}/.pi/npm-global"
+      run mkdir -p "$prefix"
+      if [ ! -e "$prefix/package.json" ]; then
+        run echo '{"name":"pi-extensions","private":true}' > "$prefix/package.json"
+      fi
+    '';
   };
 }
