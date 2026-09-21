@@ -27,6 +27,7 @@ The project is intentionally experimental — see [`docs/GOAL.md`](docs/GOAL.md)
 
 - `skills/nixos-dev-shells/` — selection rules for host vs. project flake vs. reusable shell. Paired with the two nix extensions above.
 - `skills/btca-local/` — local git repo search workflow for "use btca" prompts.
+- `skills/linear-cli/` — safe Linear reads and writes through the authenticated local MCPorter setup.
 
 ## Install
 
@@ -75,8 +76,9 @@ pi --no-session --no-tools --offline -e ./extensions/latex-renderer.ts -p /latex
 ## References
 
 - Recommended package `git:github.com/nicobailon/pi-web-access`: [`nicobailon/pi-web-access`](https://github.com/nicobailon/pi-web-access).
-- Recommended package `git:github.com/badlogic/pi-telegram`: [`badlogic/pi-telegram`](https://github.com/badlogic/pi-telegram).
+- Recommended package `git:github.com/andyp1xe1/pi-telegram@17183b894033c46fa3067a2986a782c1e594eb09`: [`andyp1xe1/pi-telegram`](https://github.com/andyp1xe1/pi-telegram), pinned to the reliable bridge fix.
 - `skills/btca-local/` is vendored from [`davis7dotsh/better-context`](https://github.com/davis7dotsh/better-context), source skill: [`skills/btca-local/SKILL.md`](https://raw.githubusercontent.com/davis7dotsh/better-context/refs/heads/main/skills/btca-local/SKILL.md).
+- `skills/linear-cli/` documents the local authenticated MCPorter workflow without storing credentials.
 
 ## License
 

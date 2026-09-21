@@ -39,7 +39,7 @@ in {
       type = lib.types.listOf lib.types.str;
       default = [
         "npm:pi-web-access"
-        "git:github.com/badlogic/pi-telegram"
+        "git:github.com/andyp1xe1/pi-telegram@17183b894033c46fa3067a2986a782c1e594eb09"
       ];
       description = "Default recommended pi package entries. Set to [] to disable the bundled recommendations.";
     };
