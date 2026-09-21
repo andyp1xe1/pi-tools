@@ -27,10 +27,31 @@ export class OrgAgendaController {
     await this.focus(ctx);
   }
 
+  async refresh(ctx: AgendaContext): Promise<void> {
+    try {
+      await this.store.reload(ctx.cwd);
+      if (this.store.visible) this.setPassive(ctx);
+      ctx.ui.notify(`Org agenda refreshed (${this.store.selectedText()})`, "info");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`Org agenda refresh failed: ${message}`, "error");
+    }
+  }
+
+  async markSelectedDone(ctx: AgendaContext): Promise<void> {
+    const result = await this.store.markSelectedDone();
+    if (result.ok) {
+      await this.refresh(ctx);
+      ctx.ui.notify(result.message ?? "Marked agenda item done", "success");
+    } else {
+      ctx.ui.notify(result.message ?? "Could not mark agenda item done", "warning");
+    }
+  }
+
   private async ensureLoaded(ctx: AgendaContext): Promise<boolean> {
     if (this.store.items.length) return true;
     try {
-      await this.store.load("all");
+      await this.store.load("all", ctx.cwd);
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -73,6 +94,8 @@ export class OrgAgendaController {
     }
 
     if (restorePassive) this.setPassive(ctx);
+    if (result?.action === "refresh") await this.refresh(ctx);
+    if (result?.action === "markDone") await this.markSelectedDone(ctx);
     if (result?.item) this.notifySelected(ctx, result.item);
   }
 

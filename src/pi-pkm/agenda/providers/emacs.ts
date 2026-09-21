@@ -26,8 +26,15 @@ export const emacsAgendaProvider: AgendaProvider = {
     const { stdout } = await execFileAsync("emacsclient", ["--eval", emacsAgendaEval()], { timeout: 10_000 });
     return parseEmacsAgendaRows(parseEmacsEvalString(stdout), query.start);
   },
-  async markDone() {
-    return { ok: false, message: "Emacs mark-done is reserved but not implemented yet" };
+  async markDone(item) {
+    if (!item.file || !item.line) return { ok: false, message: "Emacs item does not include a file and line" };
+    const { stdout } = await execFileAsync("emacsclient", ["--eval", emacsMarkDoneEval(item.file, item.line)], {
+      timeout: 10_000,
+    });
+    const ok = parseEmacsTruth(stdout);
+    return ok
+      ? { ok: true, message: `Marked DONE in Emacs: ${item.title}` }
+      : { ok: false, message: `Emacs could not mark DONE: ${item.title}` };
   },
 };
 
@@ -35,6 +42,10 @@ function parseEmacsEvalString(stdout: string): string {
   const text = stdout.trim();
   if (!text.startsWith('"')) throw new Error("Expected emacsclient to return a JSON string");
   return JSON.parse(text);
+}
+
+function parseEmacsTruth(stdout: string): boolean {
+  return stdout.trim() === "t";
 }
 
 function parseEmacsAgendaRows(json: string, reference: Date): AgendaItem[] {
@@ -78,6 +89,22 @@ function normalizeTime(time: string): string {
   const match = /\d{1,2}:\d{2}/.exec(time);
   if (!match) return "00:00";
   return match[0].length === 4 ? `0${match[0]}` : match[0];
+}
+
+function emacsMarkDoneEval(file: string, line: number): string {
+  return `(progn
+  (require 'org)
+  (let ((file ${JSON.stringify(file)})
+        (line ${line}))
+    (when (and file (file-readable-p file))
+      (with-current-buffer (find-file-noselect file)
+        (save-excursion
+          (goto-char (point-min))
+          (forward-line (1- line))
+          (org-back-to-heading t)
+          (org-todo "DONE")
+          (save-buffer)
+          t)))))`;
 }
 
 function emacsAgendaEval(): string {

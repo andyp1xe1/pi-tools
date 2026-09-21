@@ -67,7 +67,9 @@ export class AgendaPaneComponent implements Component {
       this.theme,
       this.store,
       bodyWidth,
-      [`j/k scroll · h/l source · f passive=${this.store.surface} · PgUp/PgDn jump · esc restore · q close`],
+      [
+        `j/k scroll · h/l source · d done · r refresh · f passive=${this.store.surface} · PgUp/PgDn jump · esc restore · q close`,
+      ],
       12,
     );
     return boxLines(this.theme, " Org agenda ", lines, width);
@@ -79,6 +81,8 @@ export class AgendaPaneComponent implements Component {
     if (matchesKey(data, Key.left) || data === "h") this.store.cycleProviderFilter(-1);
     if (matchesKey(data, Key.right) || data === "l") this.store.cycleProviderFilter(1);
     if (data === "f") this.store.toggleSurface();
+    if (data === "r") this.done({ action: "refresh" });
+    if (data === "d") this.done({ action: "markDone" });
     if (matchesKey(data, Key.pageUp)) this.store.move(-5);
     if (matchesKey(data, Key.pageDown)) this.store.move(5);
     if (data === "g") this.store.first();
@@ -124,6 +128,7 @@ function renderAgendaBody(
   }
   const hiddenBelow = rows.length - (store.scrollRow + visibleRows.length);
   if (maxRows && hiddenBelow > 0) lines.push(theme.fg("muted", `  ↓ ${hiddenBelow} later rows`));
+  if (!store.items.length) lines.push(theme.fg("muted", "  No agenda entries for this provider/week."));
   if (store.providerErrors.size)
     lines.push(theme.fg("warning", `provider errors: ${[...store.providerErrors.keys()].join(", ")}`));
   lines.push(theme.fg("muted", `entry ${store.selectedText()}`));

@@ -26,12 +26,14 @@ export type AgendaRow =
 
 export interface AgendaPaneResult {
   item?: AgendaItem;
+  action?: "markDone" | "refresh";
   closeAgenda?: boolean;
 }
 
 export interface AgendaQuery {
   start: Date;
   end: Date;
+  cwd?: string;
 }
 
 export interface AgendaMutationResult {
