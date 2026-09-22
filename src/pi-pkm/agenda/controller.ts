@@ -42,7 +42,7 @@ export class OrgAgendaController {
     const result = await this.store.markSelectedDone();
     if (result.ok) {
       await this.refresh(ctx);
-      ctx.ui.notify(result.message ?? "Marked agenda item done", "success");
+      ctx.ui.notify(result.message ?? "Marked agenda item done", "info");
     } else {
       ctx.ui.notify(result.message ?? "Could not mark agenda item done", "warning");
     }

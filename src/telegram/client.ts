@@ -109,8 +109,18 @@ export class TelegramClient {
   ): Promise<TResponse> {
     const form = new FormData();
     for (const [key, value] of Object.entries(fields)) form.set(key, value);
-    form.set(fileField, new Blob([await readFile(filePath)]), fileName);
+    const buffer = await readFile(filePath);
+    const bytes = new Uint8Array(buffer.byteLength);
+    bytes.set(buffer);
+    form.set(fileField, new Blob([bytes]), fileName);
     return this.request<TResponse>(method, { method: "POST", body: form }, options);
+  }
+
+  async registerCommands(
+    commands: readonly { command: string; description: string }[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.call<boolean>("setMyCommands", { commands, scope: { type: "all_private_chats" } }, { signal });
   }
 
   async downloadFile(fileId: string, suggestedName: string): Promise<string> {

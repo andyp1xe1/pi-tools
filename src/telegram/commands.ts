@@ -2,6 +2,14 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { formatTokens } from "./messages.ts";
 import type { TelegramMessage } from "./types.ts";
 
+export const TELEGRAM_BOT_COMMANDS = [
+  { command: "start", description: "Pair with this pi session" },
+  { command: "help", description: "Show available commands" },
+  { command: "status", description: "Show model, usage, cost, and context" },
+  { command: "compact", description: "Compact the current pi session" },
+  { command: "stop", description: "Abort the current pi turn" },
+] as const;
+
 interface TelegramCommandOptions {
   message: TelegramMessage;
   text: string;
@@ -16,7 +24,8 @@ interface TelegramCommandOptions {
 
 export async function handleTelegramCommand(options: TelegramCommandOptions): Promise<boolean> {
   const { message, ctx } = options;
-  const command = options.text.toLowerCase();
+  const firstToken = options.text.trim().toLowerCase().split(/\s+/, 1)[0] ?? "";
+  const command = firstToken.replace(/@[a-z0-9_]+$/, "");
 
   if (command === "stop" || command === "/stop") {
     if (options.abortCurrent) {

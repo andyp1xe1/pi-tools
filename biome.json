@@ -8,6 +8,7 @@
       "docs/**/*.md",
       "package.json",
       "package-lock.json",
+      "tsconfig.json",
       "biome.json"
     ]
   },
