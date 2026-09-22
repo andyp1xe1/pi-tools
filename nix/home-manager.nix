@@ -7,6 +7,16 @@
   cfg = config.programs.pi-tools;
 
   packagePath = "${cfg.package}";
+  disabledExtensions =
+    lib.optional (!cfg.telegram.enable) "!extensions/telegram.ts"
+    ++ lib.optional (!cfg.audioTranscription.enable) "!extensions/audio-transcription.ts";
+  packageEntry =
+    if disabledExtensions == []
+    then packagePath
+    else {
+      source = packagePath;
+      extensions = ["extensions/*.ts"] ++ disabledExtensions;
+    };
 
   baseSettings = lib.optionalAttrs (cfg.theme != null) {
     theme = cfg.theme;
@@ -16,7 +26,7 @@
     showHardwareCursor = true;
     editorPaddingX = 1;
     npmCommand = cfg.npmCommand;
-    packages = cfg.recommendedPackages ++ cfg.extraPackages ++ [packagePath];
+    packages = cfg.recommendedPackages ++ cfg.extraPackages ++ [packageEntry];
   };
 in {
   options.programs.pi-tools = {
@@ -38,10 +48,36 @@ in {
     recommendedPackages = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
-        "npm:pi-web-access"
-        "git:github.com/andyp1xe1/pi-telegram@17183b894033c46fa3067a2986a782c1e594eb09"
+        "npm:pi-web-access@0.30.0"
       ];
       description = "Default recommended pi package entries. Set to [] to disable the bundled recommendations.";
+    };
+
+    telegram = lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          enable = lib.mkEnableOption "the vendored pi Telegram bridge";
+        };
+      };
+      default = {};
+      description = "Telegram bridge integration.";
+    };
+
+    audioTranscription = lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          enable = lib.mkEnableOption "local audio transcription with Whisper";
+
+          package = lib.mkOption {
+            type = lib.types.package;
+            default = pkgs.openai-whisper;
+            defaultText = lib.literalExpression "pkgs.openai-whisper";
+            description = "Whisper package exposed to pi for local audio transcription.";
+          };
+        };
+      };
+      default = {};
+      description = "Local audio transcription integration.";
     };
 
     npmCommand = lib.mkOption {
@@ -75,7 +111,9 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    home.packages = lib.optional (cfg.piCliPackage != null) cfg.piCliPackage;
+    home.packages =
+      lib.optional (cfg.piCliPackage != null) cfg.piCliPackage
+      ++ lib.optional cfg.audioTranscription.enable cfg.audioTranscription.package;
 
     home.file = {
       ".pi/agent/settings.json".text = builtins.toJSON (baseSettings // cfg.settings);

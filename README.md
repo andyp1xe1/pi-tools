@@ -16,12 +16,14 @@ The project is intentionally experimental — see [`docs/GOAL.md`](docs/GOAL.md)
 
 ## Extensions
 
-| Extension           | What it does                                                                                                                                                                                                         | Docs                                                   |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| `dev-shell-manager` | Creates reusable Nix flake dev shells on demand under `~/dev/pi-agent-shells/<name>`.                                                                                                                                | [docs/dev-shell-manager.md](docs/dev-shell-manager.md) |
-| `nix-env-feedback`  | Watches bash failures for missing commands and steers the model toward an existing reusable shell. Adds `/cmdstats`.                                                                                                 | [docs/nix-env-feedback.md](docs/nix-env-feedback.md)   |
-| `latex-renderer`    | `render_latex` tool that displays Markdown with block LaTeX rendered as inline PNGs. Adds `/latex-renderer-test`.                                                                                                    | [docs/latex-renderer.md](docs/latex-renderer.md)       |
-| `pi-pkm`            | Org-style agenda pane in the TUI with pluggable providers (`builtin`, `todo.txt`, and emacs), project-local persistence, refresh, and DONE write-back. Adds `/org-agenda`, `/org-agenda-refresh`, `/org-agenda-done`, and `Alt+X`. | [docs/pi-pkm.md](docs/pi-pkm.md)                       |
+| Extension             | What it does                                                                                                                                                                                                         | Docs                                                       |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `audio-transcription` | Adds `transcribe_audio` for explicit, local speech transcription with Whisper.                                                                                                                                       | [docs/audio-transcription.md](docs/audio-transcription.md) |
+| `dev-shell-manager`   | Creates reusable Nix flake dev shells on demand under `~/dev/pi-agent-shells/<name>`.                                                                                                                                | [docs/dev-shell-manager.md](docs/dev-shell-manager.md)     |
+| `nix-env-feedback`    | Watches bash failures for missing commands and steers the model toward an existing reusable shell. Adds `/cmdstats`.                                                                                                 | [docs/nix-env-feedback.md](docs/nix-env-feedback.md)       |
+| `latex-renderer`      | `render_latex` tool that displays Markdown with block LaTeX rendered as inline PNGs. Adds `/latex-renderer-test`.                                                                                                    | [docs/latex-renderer.md](docs/latex-renderer.md)           |
+| `pi-pkm`              | Org-style agenda pane in the TUI with pluggable providers (`builtin`, `todo.txt`, and emacs), project-local persistence, refresh, and DONE write-back. Adds `/org-agenda`, `/org-agenda-refresh`, `/org-agenda-done`, and `Alt+X`. | [docs/pi-pkm.md](docs/pi-pkm.md)                           |
+| `telegram`            | Vendored Telegram DM bridge with automatic local transcription for voice notes when Whisper is enabled.                                                                                                             | [docs/telegram.md](docs/telegram.md)                       |
 
 ## Skills
 
@@ -51,12 +53,14 @@ imports = [
 programs.pi-tools = {
   enable = true;
   piCliPackage = inputs.llm-agents.packages.${pkgs.stdenv.hostPlatform.system}.pi;
+  telegram.enable = true;
+  audioTranscription.enable = true;
 };
 ```
 
 The module writes `~/.pi/agent/settings.json`, installs `piCliPackage` when provided, and adds the Nix-built `pi-tools` package to pi's package list.
 
-By default this is an opinionated pi-tools distro config: theme `gruvbox-dark`, bundled pi-tools extensions/skills/themes, git-sourced `pi-web-access`, and the git-sourced Telegram bridge package. Override with `theme = null;`, `recommendedPackages = [];`, `extraPackages = [...]`, and raw `settings = {...};` as needed.
+By default this is an opinionated pi-tools distro config with theme `gruvbox-dark`, bundled extensions/skills/themes, and the pinned `pi-web-access` package. Telegram and its local Whisper runtime are explicit options. Override with `theme = null;`, `recommendedPackages = [];`, `extraPackages = [...]`, and raw `settings = {...};` as needed.
 
 ## Develop
 
@@ -75,8 +79,8 @@ pi --no-session --no-tools --offline -e ./extensions/latex-renderer.ts -p /latex
 
 ## References
 
-- Recommended package `git:github.com/nicobailon/pi-web-access`: [`nicobailon/pi-web-access`](https://github.com/nicobailon/pi-web-access).
-- Recommended package `git:github.com/andyp1xe1/pi-telegram@17183b894033c46fa3067a2986a782c1e594eb09`: [`andyp1xe1/pi-telegram`](https://github.com/andyp1xe1/pi-telegram), pinned to the reliable bridge fix.
+- Recommended package `npm:pi-web-access@0.30.0`: [`nicobailon/pi-web-access`](https://github.com/nicobailon/pi-web-access).
+- Telegram bridge attribution: [`src/telegram/NOTICE.md`](src/telegram/NOTICE.md).
 - `skills/btca-local/` is vendored from [`davis7dotsh/better-context`](https://github.com/davis7dotsh/better-context), source skill: [`skills/btca-local/SKILL.md`](https://raw.githubusercontent.com/davis7dotsh/better-context/refs/heads/main/skills/btca-local/SKILL.md).
 - `skills/linear-cli/` documents the local authenticated MCPorter workflow without storing credentials.
 
