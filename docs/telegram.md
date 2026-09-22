@@ -27,11 +27,12 @@ With audio transcription enabled, voice prompts include a transcript and the ori
 
 ## Commands
 
-The bridge registers `/start`, `/help`, `/status`, `/compact`, and `/stop` with Telegram when it connects. Messages received during compaction are held until compaction finishes.
+The bridge registers `/start`, `/help`, `/new`, `/model`, `/thinking`, `/status`, `/compact`, and `/stop` with Telegram when it connects. Model and thinking commands use Telegram button menus. `/new` starts a clean pi thread and reconnects the bridge. Messages received during compaction are held until compaction finishes.
 
 - `/telegram-setup` — configure the bot token.
 - `/telegram-connect` — connect the current pi session.
 - `/telegram-disconnect` — stop polling.
+- `/telegram-new` — start a new pi thread and reconnect the bridge.
 - `/telegram-status` — show bridge status.
 
-Inside Telegram, `/status`, `/compact`, `/start`, and `stop` are handled by the bridge.
+Inside Telegram, the registered commands are handled directly by the bridge.

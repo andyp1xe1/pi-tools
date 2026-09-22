@@ -16,6 +16,7 @@ import {
   isTelegramPrompt,
   isTelegramUserMessage,
 } from "./messages.ts";
+import { TelegramPickers } from "./pickers.ts";
 import { TelegramPreview } from "./preview.ts";
 import { createTelegramTurn } from "./turn.ts";
 import type {
@@ -44,10 +45,12 @@ export class TelegramBridge {
   private compacting = false;
   private readonly mediaGroups = new Map<string, TelegramMediaGroupState>();
   private readonly client: TelegramClient;
+  private readonly pickers: TelegramPickers;
   private readonly preview: TelegramPreview;
 
   constructor(private readonly pi: ExtensionAPI) {
     this.client = new TelegramClient(() => this.config);
+    this.pickers = new TelegramPickers(pi, this.client);
     this.preview = new TelegramPreview(this.client);
   }
 
@@ -204,6 +207,9 @@ export class TelegramBridge {
       sendText: (chatId, messageId, text) => this.sendText(chatId, messageId, text),
       updateStatus: () => this.updateStatus(ctx),
       runTask: (operation, task) => this.runTask(ctx, operation, task),
+      startNewSession: () => this.startNewSession(),
+      showModelPicker: () => this.pickers.showModelPicker(firstMessage.chat.id, ctx),
+      showThinkingPicker: () => this.pickers.showThinkingPicker(firstMessage.chat.id, ctx),
     });
     if (handled) return;
 
@@ -214,6 +220,10 @@ export class TelegramBridge {
       return;
     }
     await this.deliverTurn(turn, ctx);
+  }
+
+  private startNewSession(): void {
+    this.pi.sendUserMessage("/telegram-new", { expandPromptTemplates: true });
   }
 
   private async deliverTurn(turn: PendingTelegramTurn, ctx: ExtensionContext): Promise<void> {
@@ -254,6 +264,16 @@ export class TelegramBridge {
   }
 
   private async handleUpdate(update: TelegramUpdate, ctx: ExtensionContext): Promise<void> {
+    const callback = update.callback_query;
+    if (callback) {
+      if (callback.from.is_bot || callback.from.id !== this.config.allowedUserId) {
+        await this.client.answerCallbackQuery(callback.id, "This bot is not authorized for your account.");
+        return;
+      }
+      await this.pickers.handleCallback(callback, ctx);
+      return;
+    }
+
     const message = update.message || update.edited_message;
     if (message?.chat.type !== "private" || !message.from || message.from.is_bot) return;
 
@@ -309,7 +329,7 @@ export class TelegramBridge {
             offset: this.config.lastUpdateId !== undefined ? this.config.lastUpdateId + 1 : undefined,
             limit: 10,
             timeout: 30,
-            allowed_updates: ["message", "edited_message"],
+            allowed_updates: ["message", "edited_message", "callback_query"],
           },
           { signal, retries: 0 },
         );
@@ -403,6 +423,20 @@ export class TelegramBridge {
       description: "Configure Telegram bot token",
       handler: async (_args, ctx) => this.promptForConfig(ctx),
     });
+    this.pi.registerCommand("telegram-new", {
+      description: "Start a new pi thread and reconnect Telegram",
+      handler: async (_args, ctx) => {
+        await ctx.waitForIdle();
+        const parentSession = ctx.sessionManager.getSessionFile();
+        const result = await ctx.newSession({
+          ...(parentSession ? { parentSession } : {}),
+          withSession: async (replacementCtx) => {
+            await replacementCtx.sendUserMessage("/telegram-connect notify", { expandPromptTemplates: true });
+          },
+        });
+        if (result.cancelled) ctx.ui.notify("New Telegram thread was cancelled.", "warning");
+      },
+    });
     this.pi.registerCommand("telegram-status", {
       description: "Show Telegram bridge status",
       handler: async (_args, ctx) => {
@@ -418,10 +452,13 @@ export class TelegramBridge {
     });
     this.pi.registerCommand("telegram-connect", {
       description: "Start the Telegram bridge in this pi session",
-      handler: async (_args, ctx) => {
+      handler: async (args, ctx) => {
         this.config = await readTelegramConfig();
         if (!this.config.botToken) return this.promptForConfig(ctx);
         await this.startPolling(ctx);
+        if (args.trim() === "notify" && this.config.lastChatId !== undefined) {
+          await this.sendText(this.config.lastChatId, 0, "New pi thread ready. Telegram is connected.");
+        }
       },
     });
     this.pi.registerCommand("telegram-disconnect", {
@@ -439,6 +476,10 @@ export class TelegramBridge {
       this.compacting = true;
     });
     this.pi.on("session_compact", async () => {
+      this.compacting = false;
+      await this.flushDeferredTurns();
+    });
+    this.pi.on("session_compact_failed", async () => {
       this.compacting = false;
       await this.flushDeferredTurns();
     });
@@ -477,6 +518,7 @@ export class TelegramBridge {
     this.compacting = false;
     this.queuedTurns = [];
     this.deferredTurns = [];
+    this.pickers.clear();
     for (const state of this.mediaGroups.values()) if (state.flushTimer) clearTimeout(state.flushTimer);
     this.mediaGroups.clear();
     if (this.activeTurn) await this.preview.clear(this.activeTurn.chatId);
