@@ -66,8 +66,9 @@ By default this is an opinionated pi-tools distro config with theme `gruvbox-dar
 
 ```bash
 npm install
-npm run fix     # biome format + lint --write
-npm run check   # biome check
+npm run fix        # biome format + lint --write
+npm run typecheck  # strict TypeScript check
+npm run check      # formatting, lint, and typecheck
 ```
 
 Smoke tests (run each extension in isolation, no session, no tools, no network):

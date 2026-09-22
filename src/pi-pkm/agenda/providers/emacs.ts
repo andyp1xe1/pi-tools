@@ -52,28 +52,32 @@ function parseEmacsAgendaRows(json: string, reference: Date): AgendaItem[] {
   const rows = JSON.parse(json) as EmacsAgendaRow[];
   if (!Array.isArray(rows)) throw new Error("Expected Emacs agenda JSON to be an array");
 
-  return rows.map((row, index) => {
+  return rows.flatMap((row, index) => {
     const [month, day, year] = row.date;
     const [start, end] = row.time.split("-");
     const normalizedStart = normalizeTime(start);
     const timeRange = end ? `${normalizedStart}-${normalizeTime(end)}` : normalizedStart;
+    const dayIndex = dayIndexForDate(new Date(year, month - 1, day), reference);
+    if (dayIndex === undefined) return [];
 
-    return {
-      id: `emacs:${row.file ?? row.category}:${row.lineNumber ?? index}:${row.time}`,
-      providerId: "emacs",
-      state: agendaState(row.state),
-      priority: agendaPriority(row.priority),
-      title: row.title.trim(),
-      day: dayIndexForDate(new Date(year, month - 1, day), reference),
-      time: normalizedStart,
-      timeRange,
-      agendaPrefix: row.extra?.trim(),
-      tags: row.tags,
-      source: row.category,
-      file: row.file,
-      line: row.lineNumber,
-      raw: row.rawLine,
-    };
+    return [
+      {
+        id: `emacs:${row.file ?? row.category}:${row.lineNumber ?? index}:${row.time}`,
+        providerId: "emacs",
+        state: agendaState(row.state),
+        priority: agendaPriority(row.priority),
+        title: row.title.trim(),
+        day: dayIndex,
+        time: normalizedStart,
+        timeRange,
+        agendaPrefix: row.extra?.trim(),
+        tags: row.tags,
+        source: row.category,
+        file: row.file,
+        line: row.lineNumber,
+        raw: row.rawLine,
+      },
+    ];
   });
 }
 

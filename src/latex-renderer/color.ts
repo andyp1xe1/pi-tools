@@ -3,8 +3,12 @@ import { FORMULA_COLOR } from "./config.ts";
 import type { RGB } from "./types.ts";
 
 export function dvipngForeground(theme: Theme): string {
-  const rgb = FORMULA_COLOR.startsWith("#") ? hexToRgb(FORMULA_COLOR) : themeColorToRgb(theme, FORMULA_COLOR);
+  const rgb = isHexColor(FORMULA_COLOR) ? hexToRgb(FORMULA_COLOR) : themeColorToRgb(theme, FORMULA_COLOR);
   return `rgb ${rgb.r / 255} ${rgb.g / 255} ${rgb.b / 255}`;
+}
+
+function isHexColor(color: ThemeColor | `#${string}`): color is `#${string}` {
+  return color.startsWith("#");
 }
 
 function themeColorToRgb(theme: Theme, color: ThemeColor): RGB {

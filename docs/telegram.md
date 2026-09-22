@@ -27,6 +27,8 @@ With audio transcription enabled, voice prompts include a transcript and the ori
 
 ## Commands
 
+The bridge registers `/start`, `/help`, `/status`, `/compact`, and `/stop` with Telegram when it connects. Messages received during compaction are held until compaction finishes.
+
 - `/telegram-setup` — configure the bot token.
 - `/telegram-connect` — connect the current pi session.
 - `/telegram-disconnect` — stop polling.
