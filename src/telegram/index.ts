@@ -1,305 +1,34 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { basename, extname, join } from "node:path";
+import { mkdir, stat } from "node:fs/promises";
+import { basename } from "node:path";
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { transcribeTelegramVoice } from "./voice-transcription.ts";
-
-interface TelegramConfig {
-  botToken?: string;
-  botUsername?: string;
-  botId?: number;
-  allowedUserId?: number;
-  lastChatId?: number;
-  lastUpdateId?: number;
-}
-
-interface TelegramApiResponse<T> {
-  ok: boolean;
-  result?: T;
-  description?: string;
-  error_code?: number;
-  parameters?: {
-    retry_after?: number;
-  };
-}
-
-class TelegramRequestError extends Error {
-  constructor(
-    message: string,
-    readonly retryable: boolean,
-    readonly retryAfterMs?: number,
-  ) {
-    super(message);
-    this.name = "TelegramRequestError";
-  }
-}
-
-interface TelegramUser {
-  id: number;
-  is_bot: boolean;
-  first_name: string;
-  username?: string;
-}
-
-interface TelegramChat {
-  id: number;
-  type: string;
-}
-
-interface TelegramPhotoSize {
-  file_id: string;
-  file_size?: number;
-}
-
-interface TelegramDocument {
-  file_id: string;
-  file_name?: string;
-  mime_type?: string;
-  file_size?: number;
-}
-
-interface TelegramVideo {
-  file_id: string;
-  file_name?: string;
-  mime_type?: string;
-  file_size?: number;
-}
-
-interface TelegramAudio {
-  file_id: string;
-  file_name?: string;
-  mime_type?: string;
-  file_size?: number;
-}
-
-interface TelegramVoice {
-  file_id: string;
-  mime_type?: string;
-  file_size?: number;
-}
-
-interface TelegramAnimation {
-  file_id: string;
-  file_name?: string;
-  mime_type?: string;
-  file_size?: number;
-}
-
-interface TelegramSticker {
-  file_id: string;
-  emoji?: string;
-}
-
-interface TelegramFileInfo {
-  file_id: string;
-  fileName: string;
-  mimeType?: string;
-  isImage: boolean;
-  isVoice: boolean;
-}
-
-interface TelegramMessage {
-  message_id: number;
-  chat: TelegramChat;
-  from?: TelegramUser;
-  text?: string;
-  caption?: string;
-  media_group_id?: string;
-  photo?: TelegramPhotoSize[];
-  document?: TelegramDocument;
-  video?: TelegramVideo;
-  audio?: TelegramAudio;
-  voice?: TelegramVoice;
-  animation?: TelegramAnimation;
-  sticker?: TelegramSticker;
-}
-
-interface TelegramUpdate {
-  update_id: number;
-  message?: TelegramMessage;
-  edited_message?: TelegramMessage;
-}
-
-interface TelegramGetFileResult {
-  file_path: string;
-}
-
-interface TelegramSentMessage {
-  message_id: number;
-}
-
-interface DownloadedTelegramFile {
-  path: string;
-  fileName: string;
-  isImage: boolean;
-  isVoice: boolean;
-  mimeType?: string;
-}
-
-interface PendingTelegramTurn {
-  chatId: number;
-  replyToMessageId: number;
-  queuedAttachments: QueuedAttachment[];
-  content: Array<TextContent | ImageContent>;
-}
-
-type ActiveTelegramTurn = PendingTelegramTurn;
-
-interface QueuedAttachment {
-  path: string;
-  fileName: string;
-}
-
-interface TelegramPreviewState {
-  mode: "draft" | "message";
-  draftId?: number;
-  messageId?: number;
-  pendingText: string;
-  lastSentText: string;
-  flushTimer?: ReturnType<typeof setTimeout>;
-}
-
-interface TelegramMediaGroupState {
-  messages: TelegramMessage[];
-  flushTimer?: ReturnType<typeof setTimeout>;
-}
-
-const CONFIG_PATH = join(homedir(), ".pi", "agent", "telegram.json");
-const TEMP_DIR = join(homedir(), ".pi", "agent", "tmp", "telegram");
-const TELEGRAM_PREFIX = "[telegram]";
-const MAX_MESSAGE_LENGTH = 4096;
-const PREVIEW_THROTTLE_MS = 750;
-const TELEGRAM_DRAFT_ID_MAX = 2_147_483_647;
-const TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS = 1200;
-
-const SYSTEM_PROMPT_SUFFIX = `
-
-Telegram bridge extension is active.
-- Messages forwarded from Telegram are prefixed with "[telegram]".
-- [telegram] messages may include local temp file paths for Telegram attachments. Read those files as needed.
-- Use telegram_attach to send local files to the paired Telegram chat. It works during both Telegram and terminal-originated turns while the bridge is connected.
-- If a [telegram] user asked for a file or generated artifact, call telegram_attach instead of only mentioning the local path.`;
-
-function isTelegramPrompt(prompt: string): boolean {
-  return prompt.trimStart().startsWith(TELEGRAM_PREFIX);
-}
-
-function sanitizeFileName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9._-]+/g, "_");
-}
-
-function guessExtensionFromMime(mimeType: string | undefined, fallback: string): string {
-  if (!mimeType) return fallback;
-  const normalized = mimeType.toLowerCase();
-  if (normalized === "image/jpeg") return ".jpg";
-  if (normalized === "image/png") return ".png";
-  if (normalized === "image/webp") return ".webp";
-  if (normalized === "image/gif") return ".gif";
-  if (normalized === "audio/ogg") return ".ogg";
-  if (normalized === "audio/mpeg") return ".mp3";
-  if (normalized === "audio/wav") return ".wav";
-  if (normalized === "video/mp4") return ".mp4";
-  if (normalized === "application/pdf") return ".pdf";
-  return fallback;
-}
-
-function guessMediaType(path: string): string | undefined {
-  const ext = extname(path).toLowerCase();
-  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
-  if (ext === ".png") return "image/png";
-  if (ext === ".webp") return "image/webp";
-  if (ext === ".gif") return "image/gif";
-  return undefined;
-}
-
-function isImageMimeType(mimeType: string | undefined): boolean {
-  return mimeType?.toLowerCase().startsWith("image/") ?? false;
-}
-
-function formatTokens(count: number): string {
-  if (count < 1000) return count.toString();
-  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-  if (count < 1000000) return `${Math.round(count / 1000)}k`;
-  if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
-  return `${Math.round(count / 1000000)}M`;
-}
-
-function chunkParagraphs(text: string): string[] {
-  if (text.length <= MAX_MESSAGE_LENGTH) return [text];
-
-  const normalized = text.replace(/\r\n/g, "\n");
-  const paragraphs = normalized.split(/\n\n+/);
-  const chunks: string[] = [];
-  let current = "";
-
-  const flushCurrent = (): void => {
-    if (current.trim().length > 0) chunks.push(current);
-    current = "";
-  };
-
-  const splitLongBlock = (block: string): string[] => {
-    if (block.length <= MAX_MESSAGE_LENGTH) return [block];
-    const lines = block.split("\n");
-    const lineChunks: string[] = [];
-    let lineCurrent = "";
-    for (const line of lines) {
-      const candidate = lineCurrent.length === 0 ? line : `${lineCurrent}\n${line}`;
-      if (candidate.length <= MAX_MESSAGE_LENGTH) {
-        lineCurrent = candidate;
-        continue;
-      }
-      if (lineCurrent.length > 0) {
-        lineChunks.push(lineCurrent);
-        lineCurrent = "";
-      }
-      if (line.length <= MAX_MESSAGE_LENGTH) {
-        lineCurrent = line;
-        continue;
-      }
-      for (let i = 0; i < line.length; i += MAX_MESSAGE_LENGTH) {
-        lineChunks.push(line.slice(i, i + MAX_MESSAGE_LENGTH));
-      }
-    }
-    if (lineCurrent.length > 0) lineChunks.push(lineCurrent);
-    return lineChunks;
-  };
-
-  for (const paragraph of paragraphs) {
-    if (paragraph.length === 0) continue;
-    const parts = splitLongBlock(paragraph);
-    for (const part of parts) {
-      const candidate = current.length === 0 ? part : `${current}\n\n${part}`;
-      if (candidate.length <= MAX_MESSAGE_LENGTH) {
-        current = candidate;
-      } else {
-        flushCurrent();
-        current = part;
-      }
-    }
-  }
-  flushCurrent();
-  return chunks;
-}
-
-async function readConfig(): Promise<TelegramConfig> {
-  try {
-    const content = await readFile(CONFIG_PATH, "utf8");
-    const parsed = JSON.parse(content) as TelegramConfig;
-    return parsed;
-  } catch {
-    return {};
-  }
-}
-
-async function writeConfig(config: TelegramConfig): Promise<void> {
-  await mkdir(join(homedir(), ".pi", "agent"), { recursive: true });
-  await writeFile(CONFIG_PATH, `${JSON.stringify(config, null, "\t")}\n`, "utf8");
-}
+import { isAbortError, type TelegramCallOptions, TelegramClient, waitBeforeRetry } from "./client.ts";
+import { handleTelegramCommand } from "./commands.ts";
+import { readTelegramConfig as readConfig, writeTelegramConfig as writeConfig } from "./config.ts";
+import { MAX_MESSAGE_LENGTH, SYSTEM_PROMPT_SUFFIX, TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS, TEMP_DIR } from "./constants.ts";
+import {
+  extractAssistantText,
+  getMessageText,
+  isAssistantMessage,
+  isTelegramPrompt,
+  isTelegramUserMessage,
+} from "./messages.ts";
+import { TelegramPreview } from "./preview.ts";
+import { createTelegramTurn } from "./turn.ts";
+import type {
+  ActiveTelegramTurn,
+  PendingTelegramTurn,
+  QueuedAttachment,
+  TelegramApiResponse,
+  TelegramConfig,
+  TelegramMediaGroupState,
+  TelegramMessage,
+  TelegramUpdate,
+  TelegramUser,
+} from "./types.ts";
 
 export default function (pi: ExtensionAPI) {
   let config: TelegramConfig = {};
@@ -311,14 +40,16 @@ export default function (pi: ExtensionAPI) {
   let currentAbort: (() => void) | undefined;
   let latestAgentMessages: AgentMessage[] = [];
   let setupInProgress = false;
-  let previewState: TelegramPreviewState | undefined;
-  let draftSupport: "unknown" | "supported" | "unsupported" = "unknown";
-  let nextDraftId = 0;
   const mediaGroups = new Map<string, TelegramMediaGroupState>();
+  const client = new TelegramClient(() => config);
+  const preview = new TelegramPreview(client);
 
-  function allocateDraftId(): number {
-    nextDraftId = nextDraftId >= TELEGRAM_DRAFT_ID_MAX ? 1 : nextDraftId + 1;
-    return nextDraftId;
+  function callTelegram<TResponse>(
+    method: string,
+    body: Record<string, unknown>,
+    options?: TelegramCallOptions,
+  ): Promise<TResponse> {
+    return client.call<TResponse>(method, body, options);
   }
 
   function updateStatus(ctx: ExtensionContext, error?: string): void {
@@ -356,123 +87,6 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setStatus("telegram", `${label} ${theme.fg("success", "connected")}`);
   }
 
-  type TelegramCallOptions = {
-    signal?: AbortSignal;
-    retries?: number;
-  };
-
-  function isAbortError(error: unknown): boolean {
-    return error instanceof DOMException && error.name === "AbortError";
-  }
-
-  async function waitBeforeRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
-    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    await new Promise<void>((resolve, reject) => {
-      const onAbort = (): void => {
-        clearTimeout(timer);
-        reject(new DOMException("Aborted", "AbortError"));
-      };
-      const timer = setTimeout(() => {
-        signal?.removeEventListener("abort", onAbort);
-        resolve();
-      }, delayMs);
-      signal?.addEventListener("abort", onAbort, { once: true });
-    });
-  }
-
-  async function requestTelegram<TResponse>(
-    method: string,
-    init: RequestInit,
-    options?: TelegramCallOptions,
-  ): Promise<TResponse> {
-    if (!config.botToken) throw new Error("Telegram bot token is not configured");
-    const retries = options?.retries ?? 2;
-
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        const response = await fetch(`https://api.telegram.org/bot${config.botToken}/${method}`, {
-          ...init,
-          signal: options?.signal,
-        });
-        const data = (await response.json()) as TelegramApiResponse<TResponse>;
-        if (!response.ok || !data.ok || data.result === undefined) {
-          const retryable = response.status === 429 || response.status >= 500;
-          throw new TelegramRequestError(
-            data.description || `Telegram API ${method} failed with HTTP ${response.status}`,
-            retryable,
-            data.parameters?.retry_after ? data.parameters.retry_after * 1000 : undefined,
-          );
-        }
-        return data.result;
-      } catch (error) {
-        if (isAbortError(error) || options?.signal?.aborted) throw error;
-        const retryable = !(error instanceof TelegramRequestError) || error.retryable;
-        if (!retryable || attempt >= retries) throw error;
-        const retryAfterMs = error instanceof TelegramRequestError ? error.retryAfterMs : undefined;
-        await waitBeforeRetry(retryAfterMs ?? 500 * 2 ** attempt, options?.signal);
-      }
-    }
-  }
-
-  async function callTelegram<TResponse>(
-    method: string,
-    body: Record<string, unknown>,
-    options?: TelegramCallOptions,
-  ): Promise<TResponse> {
-    return requestTelegram<TResponse>(
-      method,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      },
-      options,
-    );
-  }
-
-  async function callTelegramMultipart<TResponse>(
-    method: string,
-    fields: Record<string, string>,
-    fileField: string,
-    filePath: string,
-    fileName: string,
-    options?: TelegramCallOptions,
-  ): Promise<TResponse> {
-    const form = new FormData();
-    for (const [key, value] of Object.entries(fields)) {
-      form.set(key, value);
-    }
-    const buffer = await readFile(filePath);
-    form.set(fileField, new Blob([buffer]), fileName);
-    return requestTelegram<TResponse>(method, { method: "POST", body: form }, options);
-  }
-
-  async function downloadTelegramFile(fileId: string, suggestedName: string): Promise<string> {
-    if (!config.botToken) throw new Error("Telegram bot token is not configured");
-    const file = await callTelegram<TelegramGetFileResult>("getFile", { file_id: fileId });
-    await mkdir(TEMP_DIR, { recursive: true });
-    const targetPath = join(TEMP_DIR, `${Date.now()}-${sanitizeFileName(suggestedName)}`);
-
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        const response = await fetch(`https://api.telegram.org/file/bot${config.botToken}/${file.file_path}`);
-        if (!response.ok) {
-          throw new TelegramRequestError(
-            `Failed to download Telegram file: HTTP ${response.status}`,
-            response.status >= 500,
-          );
-        }
-        const arrayBuffer = await response.arrayBuffer();
-        await writeFile(targetPath, Buffer.from(arrayBuffer));
-        return targetPath;
-      } catch (error) {
-        const retryable = !(error instanceof TelegramRequestError) || error.retryable;
-        if (!retryable || attempt >= 2) throw error;
-        await waitBeforeRetry(500 * 2 ** attempt);
-      }
-    }
-  }
-
   function startTypingLoop(chatId?: number): void {
     const targetChatId = chatId ?? activeTelegramTurn?.chatId;
     if (typingInterval || targetChatId === undefined) return;
@@ -497,29 +111,6 @@ export default function (pi: ExtensionAPI) {
     typingInterval = undefined;
   }
 
-  function isAssistantMessage(message: AgentMessage): boolean {
-    return (message as unknown as { role?: string }).role === "assistant";
-  }
-
-  function getMessageText(message: AgentMessage): string {
-    const value = message as unknown as Record<string, unknown>;
-    const content = Array.isArray(value.content) ? value.content : [];
-    return content
-      .filter(
-        (block): block is { type: string; text?: string } =>
-          typeof block === "object" && block !== null && "type" in block,
-      )
-      .filter((block) => block.type === "text" && typeof block.text === "string")
-      .map((block) => block.text as string)
-      .join("")
-      .trim();
-  }
-
-  function isTelegramUserMessage(message: AgentMessage): boolean {
-    const role = (message as unknown as { role?: string }).role;
-    return role === "user" && isTelegramPrompt(getMessageText(message));
-  }
-
   function reportTelegramError(ctx: ExtensionContext, operation: string, error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
     updateStatus(ctx, `${operation}: ${message}`);
@@ -531,107 +122,12 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  async function clearPreview(chatId: number): Promise<void> {
-    const state = previewState;
-    if (!state) return;
-    if (state.flushTimer) {
-      clearTimeout(state.flushTimer);
-      state.flushTimer = undefined;
-    }
-    previewState = undefined;
-    if (state.mode === "draft" && state.draftId !== undefined) {
-      try {
-        await callTelegram("sendMessageDraft", { chat_id: chatId, draft_id: state.draftId, text: "" });
-      } catch {
-        // ignore
-      }
-    }
+  function sendTextReply(chatId: number, replyToMessageId: number, text: string): Promise<number | undefined> {
+    return client.sendText(chatId, replyToMessageId, text);
   }
 
-  async function flushPreview(chatId: number): Promise<void> {
-    const state = previewState;
-    if (!state) return;
-    state.flushTimer = undefined;
-    const text = state.pendingText.trim();
-    if (!text || text === state.lastSentText) return;
-    const truncated = text.length > MAX_MESSAGE_LENGTH ? text.slice(0, MAX_MESSAGE_LENGTH) : text;
-
-    if (draftSupport !== "unsupported") {
-      const draftId = state.draftId ?? allocateDraftId();
-      state.draftId = draftId;
-      try {
-        await callTelegram("sendMessageDraft", { chat_id: chatId, draft_id: draftId, text: truncated });
-        draftSupport = "supported";
-        state.mode = "draft";
-        state.lastSentText = truncated;
-        return;
-      } catch {
-        draftSupport = "unsupported";
-      }
-    }
-
-    if (state.messageId === undefined) {
-      const sent = await callTelegram<TelegramSentMessage>("sendMessage", { chat_id: chatId, text: truncated });
-      state.messageId = sent.message_id;
-      state.mode = "message";
-      state.lastSentText = truncated;
-      return;
-    }
-    await callTelegram("editMessageText", { chat_id: chatId, message_id: state.messageId, text: truncated });
-    state.mode = "message";
-    state.lastSentText = truncated;
-  }
-
-  function schedulePreviewFlush(ctx: ExtensionContext, chatId: number): void {
-    if (!previewState || previewState.flushTimer) return;
-    previewState.flushTimer = setTimeout(() => {
-      runTelegramTask(ctx, "preview failed", flushPreview(chatId));
-    }, PREVIEW_THROTTLE_MS);
-  }
-
-  async function finalizePreview(chatId: number): Promise<boolean> {
-    const state = previewState;
-    if (!state) return false;
-    await flushPreview(chatId);
-    const finalText = (state.pendingText.trim() || state.lastSentText).trim();
-    if (!finalText) {
-      await clearPreview(chatId);
-      return false;
-    }
-    if (state.mode === "draft") {
-      await callTelegram<TelegramSentMessage>("sendMessage", { chat_id: chatId, text: finalText });
-      await clearPreview(chatId);
-      return true;
-    }
-    previewState = undefined;
-    return state.messageId !== undefined;
-  }
-
-  async function sendTextReply(chatId: number, _replyToMessageId: number, text: string): Promise<number | undefined> {
-    const chunks = chunkParagraphs(text);
-    let lastMessageId: number | undefined;
-    for (const chunk of chunks) {
-      const sent = await callTelegram<TelegramSentMessage>("sendMessage", {
-        chat_id: chatId,
-        text: chunk,
-      });
-      lastMessageId = sent.message_id;
-    }
-    return lastMessageId;
-  }
-
-  async function sendAttachment(chatId: number, attachment: QueuedAttachment, signal?: AbortSignal): Promise<void> {
-    const mediaType = guessMediaType(attachment.path);
-    const method = mediaType ? "sendPhoto" : "sendDocument";
-    const fieldName = mediaType ? "photo" : "document";
-    await callTelegramMultipart<TelegramSentMessage>(
-      method,
-      { chat_id: String(chatId) },
-      fieldName,
-      attachment.path,
-      attachment.fileName,
-      { signal },
-    );
+  function sendAttachment(chatId: number, attachment: QueuedAttachment, signal?: AbortSignal): Promise<void> {
+    return client.sendAttachment(chatId, attachment, signal);
   }
 
   async function sendQueuedAttachments(turn: ActiveTelegramTurn): Promise<void> {
@@ -647,131 +143,6 @@ export default function (pi: ExtensionAPI) {
         );
       }
     }
-  }
-
-  function extractAssistantText(messages: AgentMessage[]): {
-    text?: string;
-    stopReason?: string;
-    errorMessage?: string;
-  } {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i] as unknown as Record<string, unknown>;
-      if (message.role !== "assistant") continue;
-      const stopReason = typeof message.stopReason === "string" ? message.stopReason : undefined;
-      const errorMessage = typeof message.errorMessage === "string" ? message.errorMessage : undefined;
-      const content = Array.isArray(message.content) ? message.content : [];
-      const text = content
-        .filter(
-          (block): block is { type: string; text?: string } =>
-            typeof block === "object" && block !== null && "type" in block,
-        )
-        .filter((block) => block.type === "text" && typeof block.text === "string")
-        .map((block) => block.text as string)
-        .join("")
-        .trim();
-      return { text: text || undefined, stopReason, errorMessage };
-    }
-    return {};
-  }
-
-  function collectTelegramFileInfos(messages: TelegramMessage[]): TelegramFileInfo[] {
-    const files: TelegramFileInfo[] = [];
-    for (const message of messages) {
-      if (Array.isArray(message.photo) && message.photo.length > 0) {
-        const photo = [...message.photo].sort((a, b) => (a.file_size ?? 0) - (b.file_size ?? 0)).pop();
-        if (photo) {
-          files.push({
-            file_id: photo.file_id,
-            fileName: `photo-${message.message_id}.jpg`,
-            mimeType: "image/jpeg",
-            isImage: true,
-            isVoice: false,
-          });
-        }
-      }
-      if (message.document) {
-        const fileName =
-          message.document.file_name ||
-          `document-${message.message_id}${guessExtensionFromMime(message.document.mime_type, "")}`;
-        files.push({
-          file_id: message.document.file_id,
-          fileName,
-          mimeType: message.document.mime_type,
-          isImage: isImageMimeType(message.document.mime_type),
-          isVoice: false,
-        });
-      }
-      if (message.video) {
-        const fileName =
-          message.video.file_name ||
-          `video-${message.message_id}${guessExtensionFromMime(message.video.mime_type, ".mp4")}`;
-        files.push({
-          file_id: message.video.file_id,
-          fileName,
-          mimeType: message.video.mime_type,
-          isImage: false,
-          isVoice: false,
-        });
-      }
-      if (message.audio) {
-        const fileName =
-          message.audio.file_name ||
-          `audio-${message.message_id}${guessExtensionFromMime(message.audio.mime_type, ".mp3")}`;
-        files.push({
-          file_id: message.audio.file_id,
-          fileName,
-          mimeType: message.audio.mime_type,
-          isImage: false,
-          isVoice: false,
-        });
-      }
-      if (message.voice) {
-        files.push({
-          file_id: message.voice.file_id,
-          fileName: `voice-${message.message_id}${guessExtensionFromMime(message.voice.mime_type, ".ogg")}`,
-          mimeType: message.voice.mime_type,
-          isImage: false,
-          isVoice: true,
-        });
-      }
-      if (message.animation) {
-        const fileName =
-          message.animation.file_name ||
-          `animation-${message.message_id}${guessExtensionFromMime(message.animation.mime_type, ".mp4")}`;
-        files.push({
-          file_id: message.animation.file_id,
-          fileName,
-          mimeType: message.animation.mime_type,
-          isImage: false,
-          isVoice: false,
-        });
-      }
-      if (message.sticker) {
-        files.push({
-          file_id: message.sticker.file_id,
-          fileName: `sticker-${message.message_id}.webp`,
-          mimeType: "image/webp",
-          isImage: true,
-          isVoice: false,
-        });
-      }
-    }
-    return files;
-  }
-
-  async function buildTelegramFiles(messages: TelegramMessage[]): Promise<DownloadedTelegramFile[]> {
-    const downloaded: DownloadedTelegramFile[] = [];
-    for (const file of collectTelegramFileInfos(messages)) {
-      const path = await downloadTelegramFile(file.file_id, file.fileName);
-      downloaded.push({
-        path,
-        fileName: file.fileName,
-        isImage: file.isImage,
-        isVoice: file.isVoice,
-        mimeType: file.mimeType,
-      });
-    }
-    return downloaded;
   }
 
   async function promptForConfig(ctx: ExtensionContext): Promise<void> {
@@ -810,169 +181,29 @@ export default function (pi: ExtensionAPI) {
     pollingPromise = undefined;
   }
 
-  async function createTelegramTurn(messages: TelegramMessage[]): Promise<PendingTelegramTurn> {
-    const firstMessage = messages[0];
-    if (!firstMessage) throw new Error("Missing Telegram message for turn creation");
-    const rawText = messages
-      .map((message) => (message.text || message.caption || "").trim())
-      .filter(Boolean)
-      .join("\n\n");
-    const files = await buildTelegramFiles(messages);
-    const content: Array<TextContent | ImageContent> = [];
-    let prompt = `${TELEGRAM_PREFIX}`;
-
-    if (rawText.length > 0) {
-      prompt += ` ${rawText}`;
-    }
-
-    for (const file of files) {
-      if (!file.isVoice) continue;
-      const transcript = await transcribeTelegramVoice(pi, file.path, TEMP_DIR);
-      if (transcript.text) {
-        prompt += `\n\nLocal transcript of ${file.fileName}:\n${transcript.text}`;
-      } else {
-        prompt += `\n\nLocal transcription of ${file.fileName} failed: ${transcript.error ?? "unknown error"}`;
-      }
-    }
-
-    if (files.length > 0) {
-      prompt += `\n\nTelegram attachments were saved locally:`;
-      for (const file of files) {
-        prompt += `\n- ${file.path}`;
-      }
-    }
-    content.push({ type: "text", text: prompt });
-
-    for (const file of files) {
-      if (!file.isImage) continue;
-      const mediaType = file.mimeType || guessMediaType(file.path);
-      if (!mediaType) continue;
-      const buffer = await readFile(file.path);
-      content.push({
-        type: "image",
-        data: buffer.toString("base64"),
-        mimeType: mediaType,
-      });
-    }
-
-    return {
-      chatId: firstMessage.chat.id,
-      replyToMessageId: firstMessage.message_id,
-      queuedAttachments: [],
-      content,
-    };
-  }
-
   async function dispatchAuthorizedTelegramMessages(messages: TelegramMessage[], ctx: ExtensionContext): Promise<void> {
     const firstMessage = messages[0];
     if (!firstMessage) return;
     const rawText =
       messages.map((message) => (message.text || message.caption || "").trim()).find((text) => text.length > 0) || "";
-    const lower = rawText.toLowerCase();
-
-    if (lower === "stop" || lower === "/stop") {
-      if (currentAbort) {
-        currentAbort();
-        updateStatus(ctx);
-        await sendTextReply(firstMessage.chat.id, firstMessage.message_id, "Aborted current turn.");
-      } else {
-        await sendTextReply(firstMessage.chat.id, firstMessage.message_id, "No active turn.");
-      }
-      return;
-    }
-
-    if (lower === "/compact") {
-      if (!ctx.isIdle()) {
-        await sendTextReply(
-          firstMessage.chat.id,
-          firstMessage.message_id,
-          'Cannot compact while pi is busy. Send "stop" first.',
-        );
-        return;
-      }
-      ctx.compact({
-        onComplete: () => {
-          runTelegramTask(
-            ctx,
-            "compact reply failed",
-            sendTextReply(firstMessage.chat.id, firstMessage.message_id, "Compaction completed."),
-          );
-        },
-        onError: (error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          runTelegramTask(
-            ctx,
-            "compact reply failed",
-            sendTextReply(firstMessage.chat.id, firstMessage.message_id, `Compaction failed: ${message}`),
-          );
-        },
-      });
-      await sendTextReply(firstMessage.chat.id, firstMessage.message_id, "Compaction started.");
-      return;
-    }
-
-    if (lower === "/status") {
-      let totalInput = 0;
-      let totalOutput = 0;
-      let totalCacheRead = 0;
-      let totalCacheWrite = 0;
-      let totalCost = 0;
-
-      for (const entry of ctx.sessionManager.getEntries()) {
-        if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-        totalInput += entry.message.usage.input;
-        totalOutput += entry.message.usage.output;
-        totalCacheRead += entry.message.usage.cacheRead;
-        totalCacheWrite += entry.message.usage.cacheWrite;
-        totalCost += entry.message.usage.cost.total;
-      }
-
-      const usage = ctx.getContextUsage();
-      const lines: string[] = [];
-      if (ctx.model) {
-        lines.push(`Model: ${ctx.model.provider}/${ctx.model.id}`);
-      }
-      const tokenParts: string[] = [];
-      if (totalInput) tokenParts.push(`↑${formatTokens(totalInput)}`);
-      if (totalOutput) tokenParts.push(`↓${formatTokens(totalOutput)}`);
-      if (totalCacheRead) tokenParts.push(`R${formatTokens(totalCacheRead)}`);
-      if (totalCacheWrite) tokenParts.push(`W${formatTokens(totalCacheWrite)}`);
-      if (tokenParts.length > 0) {
-        lines.push(`Usage: ${tokenParts.join(" ")}`);
-      }
-      const usingSubscription = ctx.model ? ctx.modelRegistry.isUsingOAuth(ctx.model) : false;
-      if (totalCost || usingSubscription) {
-        lines.push(`Cost: $${totalCost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`);
-      }
-      if (usage) {
-        const contextWindow = usage.contextWindow ?? ctx.model?.contextWindow ?? 0;
-        const percent = usage.percent !== null ? `${usage.percent.toFixed(1)}%` : "?";
-        lines.push(`Context: ${percent}/${formatTokens(contextWindow)}`);
-      } else {
-        lines.push("Context: unknown");
-      }
-      if (lines.length === 0) {
-        lines.push("No usage data yet.");
-      }
-      await sendTextReply(firstMessage.chat.id, firstMessage.message_id, lines.join("\n"));
-      return;
-    }
-
-    if (lower === "/help" || lower === "/start") {
-      await sendTextReply(
-        firstMessage.chat.id,
-        firstMessage.message_id,
-        `Send me a message and I will forward it to pi. Commands: /status, /compact, stop.`,
-      );
-      if (config.allowedUserId === undefined && firstMessage.from) {
-        config.allowedUserId = firstMessage.from.id;
+    const handled = await handleTelegramCommand({
+      message: firstMessage,
+      text: rawText,
+      ctx,
+      abortCurrent: currentAbort,
+      isPaired: config.allowedUserId !== undefined,
+      pair: async (userId) => {
+        config.allowedUserId = userId;
         await writeConfig(config);
         updateStatus(ctx);
-      }
-      return;
-    }
+      },
+      sendText: sendTextReply,
+      updateStatus: () => updateStatus(ctx),
+      runTask: (operation, task) => runTelegramTask(ctx, operation, task),
+    });
+    if (handled) return;
 
-    const turn = await createTelegramTurn(messages);
+    const turn = await createTelegramTurn(pi, client, messages);
     queuedTelegramTurns.push(turn);
     updateStatus(ctx);
     try {
@@ -1196,13 +427,7 @@ export default function (pi: ExtensionAPI) {
       if (state.flushTimer) clearTimeout(state.flushTimer);
     }
     mediaGroups.clear();
-    if (activeTelegramTurn) {
-      try {
-        await clearPreview(activeTelegramTurn.chatId);
-      } catch {
-        previewState = undefined;
-      }
-    }
+    if (activeTelegramTurn) await preview.clear(activeTelegramTurn.chatId);
     activeTelegramTurn = undefined;
     currentAbort = undefined;
     await stopPolling();
@@ -1231,11 +456,7 @@ export default function (pi: ExtensionAPI) {
         activeTelegramTurn.queuedAttachments.push(...nextTurn.queuedAttachments);
       } else {
         activeTelegramTurn = { ...nextTurn };
-        previewState = {
-          mode: draftSupport === "unsupported" ? "message" : "draft",
-          pendingText: "",
-          lastSentText: "",
-        };
+        preview.start();
       }
       startTypingLoop(nextTurn.chatId);
       updateStatus(ctx);
@@ -1243,23 +464,20 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (!activeTelegramTurn || !isAssistantMessage(event.message)) return;
-    if (previewState && (previewState.pendingText.trim().length > 0 || previewState.lastSentText.trim().length > 0)) {
+    if (preview.hasContent()) {
       try {
-        await finalizePreview(activeTelegramTurn.chatId);
+        await preview.finalize(activeTelegramTurn.chatId);
       } catch (error) {
         reportTelegramError(ctx, "preview failed", error);
       }
     }
-    previewState = { mode: draftSupport === "unsupported" ? "message" : "draft", pendingText: "", lastSentText: "" };
+    preview.start();
   });
 
   pi.on("message_update", async (event, ctx) => {
     if (!activeTelegramTurn || !isAssistantMessage(event.message)) return;
-    if (!previewState) {
-      previewState = { mode: draftSupport === "unsupported" ? "message" : "draft", pendingText: "", lastSentText: "" };
-    }
-    previewState.pendingText = getMessageText(event.message);
-    schedulePreviewFlush(ctx, activeTelegramTurn.chatId);
+    preview.update(getMessageText(event.message));
+    preview.schedule(activeTelegramTurn.chatId, (error) => reportTelegramError(ctx, "preview failed", error));
   });
 
   pi.on("agent_end", async (event) => {
@@ -1277,11 +495,11 @@ export default function (pi: ExtensionAPI) {
     try {
       const assistant = extractAssistantText(latestAgentMessages);
       if (assistant.stopReason === "aborted") {
-        await clearPreview(turn.chatId);
+        await preview.clear(turn.chatId);
         return;
       }
       if (assistant.stopReason === "error") {
-        await clearPreview(turn.chatId);
+        await preview.clear(turn.chatId);
         await sendTextReply(
           turn.chatId,
           turn.replyToMessageId,
@@ -1291,14 +509,12 @@ export default function (pi: ExtensionAPI) {
       }
 
       const finalText = assistant.text;
-      if (previewState) {
-        previewState.pendingText = finalText ?? previewState.pendingText;
-      }
+      if (finalText) preview.update(finalText);
 
       if (finalText && finalText.length <= MAX_MESSAGE_LENGTH) {
-        await finalizePreview(turn.chatId);
+        await preview.finalize(turn.chatId);
       } else {
-        await clearPreview(turn.chatId);
+        await preview.clear(turn.chatId);
         if (finalText) {
           await sendTextReply(turn.chatId, turn.replyToMessageId, finalText);
         } else if (turn.queuedAttachments.length > 0) {
