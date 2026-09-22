@@ -8,6 +8,7 @@ import type {
   TelegramApiResponse,
   TelegramConfig,
   TelegramFileResult,
+  TelegramInlineKeyboardMarkup,
   TelegramSentMessage,
 } from "./types.ts";
 
@@ -156,6 +157,36 @@ export class TelegramClient {
       lastMessageId = sent.message_id;
     }
     return lastMessageId;
+  }
+
+  async sendMenu(chatId: number, text: string, replyMarkup: TelegramInlineKeyboardMarkup): Promise<number> {
+    const sent = await this.call<TelegramSentMessage>("sendMessage", {
+      chat_id: chatId,
+      text,
+      reply_markup: replyMarkup,
+    });
+    return sent.message_id;
+  }
+
+  async editMenu(
+    chatId: number,
+    messageId: number,
+    text: string,
+    replyMarkup?: TelegramInlineKeyboardMarkup,
+  ): Promise<void> {
+    await this.call<TelegramSentMessage>("editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      reply_markup: replyMarkup,
+    });
+  }
+
+  async answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
+    await this.call<boolean>("answerCallbackQuery", {
+      callback_query_id: callbackQueryId,
+      text,
+    });
   }
 
   async sendAttachment(chatId: number, attachment: QueuedAttachment, signal?: AbortSignal): Promise<void> {

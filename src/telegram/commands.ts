@@ -5,6 +5,9 @@ import type { TelegramMessage } from "./types.ts";
 export const TELEGRAM_BOT_COMMANDS = [
   { command: "start", description: "Pair with this pi session" },
   { command: "help", description: "Show available commands" },
+  { command: "new", description: "Start a new pi thread" },
+  { command: "model", description: "Choose the active model" },
+  { command: "thinking", description: "Choose the thinking level" },
   { command: "status", description: "Show model, usage, cost, and context" },
   { command: "compact", description: "Compact the current pi session" },
   { command: "stop", description: "Abort the current pi turn" },
@@ -20,6 +23,9 @@ interface TelegramCommandOptions {
   sendText(chatId: number, messageId: number, text: string): Promise<unknown>;
   updateStatus(): void;
   runTask(operation: string, task: Promise<unknown>): void;
+  startNewSession(): void;
+  showModelPicker(): Promise<void>;
+  showThinkingPicker(): Promise<void>;
 }
 
 export async function handleTelegramCommand(options: TelegramCommandOptions): Promise<boolean> {
@@ -35,6 +41,34 @@ export async function handleTelegramCommand(options: TelegramCommandOptions): Pr
     } else {
       await options.sendText(message.chat.id, message.message_id, "No active turn.");
     }
+    return true;
+  }
+
+  if (command === "/new") {
+    if (!ctx.isIdle()) {
+      await options.sendText(
+        message.chat.id,
+        message.message_id,
+        'Cannot start a new thread while pi is busy. Send "/stop" first.',
+      );
+      return true;
+    }
+    await options.sendText(
+      message.chat.id,
+      message.message_id,
+      "Starting a new pi thread. Telegram will reconnect automatically.",
+    );
+    options.startNewSession();
+    return true;
+  }
+
+  if (command === "/model") {
+    await options.showModelPicker();
+    return true;
+  }
+
+  if (command === "/thinking") {
+    await options.showThinkingPicker();
     return true;
   }
 
@@ -75,7 +109,7 @@ export async function handleTelegramCommand(options: TelegramCommandOptions): Pr
     await options.sendText(
       message.chat.id,
       message.message_id,
-      "Send me a message and I will forward it to pi. Commands: /status, /compact, stop.",
+      "Send me a message and I will forward it to pi. Commands: /new, /model, /thinking, /status, /compact, /stop.",
     );
     if (!options.isPaired && message.from) await options.pair(message.from.id);
     return true;
