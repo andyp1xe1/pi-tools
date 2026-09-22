@@ -4,8 +4,8 @@ import { TEMP_DIR } from "./constants.ts";
 import { guessImageMediaType, sanitizeFileName } from "./media.ts";
 import { chunkParagraphs } from "./messages.ts";
 import type {
-  QueuedAttachment,
   TelegramApiResponse,
+  TelegramAttachment,
   TelegramConfig,
   TelegramFileResult,
   TelegramInlineKeyboardMarkup,
@@ -189,7 +189,7 @@ export class TelegramClient {
     });
   }
 
-  async sendAttachment(chatId: number, attachment: QueuedAttachment, signal?: AbortSignal): Promise<void> {
+  async sendAttachment(chatId: number, attachment: TelegramAttachment, signal?: AbortSignal): Promise<void> {
     const mediaType = guessImageMediaType(attachment.path);
     await this.callMultipart<TelegramSentMessage>(
       mediaType ? "sendPhoto" : "sendDocument",

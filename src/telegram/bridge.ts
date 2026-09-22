@@ -22,8 +22,8 @@ import { createTelegramTurn } from "./turn.ts";
 import type {
   ActiveTelegramTurn,
   PendingTelegramTurn,
-  QueuedAttachment,
   TelegramApiResponse,
+  TelegramAttachment,
   TelegramConfig,
   TelegramMediaGroupState,
   TelegramMessage,
@@ -135,21 +135,6 @@ export class TelegramBridge {
 
   private sendText(chatId: number, messageId: number, text: string): Promise<number | undefined> {
     return this.client.sendText(chatId, messageId, text);
-  }
-
-  private async sendQueuedAttachments(turn: ActiveTelegramTurn): Promise<void> {
-    for (const attachment of turn.queuedAttachments) {
-      try {
-        await this.client.sendAttachment(turn.chatId, attachment);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await this.sendText(
-          turn.chatId,
-          turn.replyToMessageId,
-          `Failed to send attachment ${attachment.fileName}: ${message}`,
-        );
-      }
-    }
   }
 
   private async promptForConfig(ctx: ExtensionContext): Promise<void> {
@@ -377,8 +362,7 @@ export class TelegramBridge {
     this.pi.registerTool({
       name: "telegram_attach",
       label: "Telegram Attach",
-      description:
-        "Send one or more local files to the paired Telegram chat. During a Telegram reply, files are sent after the final text. During any other turn, files are sent immediately.",
+      description: "Send one or more local files immediately to the paired Telegram chat.",
       promptSnippet: "Send local files to the paired Telegram chat.",
       promptGuidelines: [
         "Use telegram_attach to send requested files to Telegram even when the current prompt came from the terminal.",
@@ -392,21 +376,11 @@ export class TelegramBridge {
         const chatId = this.activeTurn?.chatId ?? this.config.lastChatId ?? this.config.allowedUserId;
         if (chatId === undefined) throw new Error("Telegram bridge is not paired. Send /start to the bot first.");
 
-        const attachments: QueuedAttachment[] = [];
+        const attachments: TelegramAttachment[] = [];
         for (const inputPath of params.paths) {
           const stats = await stat(inputPath);
           if (!stats.isFile()) throw new Error(`Not a file: ${inputPath}`);
           attachments.push({ path: inputPath, fileName: basename(inputPath) });
-        }
-
-        if (this.activeTurn) {
-          this.activeTurn.queuedAttachments.push(...attachments);
-          return {
-            content: [
-              { type: "text" as const, text: `Queued ${attachments.length} Telegram attachment(s) for this reply.` },
-            ],
-            details: { paths: params.paths, delivery: "after-reply" },
-          };
         }
 
         for (const attachment of attachments) await this.client.sendAttachment(chatId, attachment, signal);
@@ -533,7 +507,6 @@ export class TelegramBridge {
       if (!nextTurn) return;
       if (this.activeTurn) {
         this.activeTurn.replyToMessageId = nextTurn.replyToMessageId;
-        this.activeTurn.queuedAttachments.push(...nextTurn.queuedAttachments);
       } else {
         this.activeTurn = { ...nextTurn };
         this.preview.start();
@@ -591,11 +564,7 @@ export class TelegramBridge {
       } else {
         await this.preview.clear(turn.chatId);
         if (finalText) await this.sendText(turn.chatId, turn.replyToMessageId, finalText);
-        else if (turn.queuedAttachments.length) {
-          await this.sendText(turn.chatId, turn.replyToMessageId, "Attached requested file(s).");
-        }
       }
-      await this.sendQueuedAttachments(turn);
     } catch (error) {
       this.reportError(ctx, "reply failed", error);
     }
