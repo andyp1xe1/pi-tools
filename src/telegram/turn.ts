@@ -61,7 +61,6 @@ export async function createTelegramTurn(
   return {
     chatId: firstMessage.chat.id,
     replyToMessageId: firstMessage.message_id,
-    queuedAttachments: [],
     content,
   };
 }

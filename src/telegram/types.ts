@@ -135,7 +135,7 @@ export interface DownloadedTelegramFile {
   mimeType?: string;
 }
 
-export interface QueuedAttachment {
+export interface TelegramAttachment {
   path: string;
   fileName: string;
 }
@@ -143,7 +143,6 @@ export interface QueuedAttachment {
 export interface PendingTelegramTurn {
   chatId: number;
   replyToMessageId: number;
-  queuedAttachments: QueuedAttachment[];
   content: Array<TextContent | ImageContent>;
 }
 
