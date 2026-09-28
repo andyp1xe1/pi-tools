@@ -40,9 +40,8 @@
           && base != "build"
           && base != "coverage";
       };
-    in {
-      default = pkgs.stdenvNoCC.mkDerivation {
-        pname = "pi-tools";
+      mkPiTools = withBrowserCheck: pkgs.stdenvNoCC.mkDerivation {
+        pname = if withBrowserCheck then "pi-tools" else "pi-tools-without-browser-check";
         version = "0.0.1";
         src = source;
 
@@ -52,9 +51,28 @@
           runHook preInstall
           mkdir -p "$out"
           cp -R . "$out/"
+          ${pkgs.lib.optionalString withBrowserCheck ''
+            ln -s ${self.packages.${pkgs.stdenv.hostPlatform.system}.browser-check}/lib/node_modules/pi-tools/node_modules "$out/node_modules"
+          ''}
+          ${pkgs.lib.optionalString (!withBrowserCheck) ''
+            rm -r "$out/skills/browser-check" "$out/src/browser-check" "$out/tests/browser-check"
+            rm "$out/bin/browser-check.mjs"
+          ''}
           runHook postInstall
         '';
       };
+    in rec {
+      browser-check = pkgs.buildNpmPackage {
+        pname = "pi-tools-browser-check";
+        version = "0.0.1";
+        src = source;
+        npmDepsHash = "sha256-ztWdXt+/3d6zd/FhgRYIdAuGjCbqUfTaY6CObFIm1xs=";
+        npmFlags = ["--omit=dev"];
+        dontNpmBuild = true;
+      };
+
+      default = mkPiTools true;
+      without-browser-check = mkPiTools false;
 
       pi-tools = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
     });

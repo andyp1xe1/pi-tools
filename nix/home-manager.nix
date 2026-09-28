@@ -34,9 +34,12 @@ in {
 
     package = lib.mkOption {
       type = lib.types.path;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-      defaultText = lib.literalExpression "inputs.pi-tools.packages.\${pkgs.stdenv.hostPlatform.system}.default";
-      description = "The pi package directory exposed to pi.";
+      default =
+        if cfg.browserCheck.enable
+        then self.packages.${pkgs.stdenv.hostPlatform.system}.default
+        else self.packages.${pkgs.stdenv.hostPlatform.system}.without-browser-check;
+      defaultText = lib.literalExpression "pi-tools package, with or without browser-check based on browserCheck.enable";
+      description = "The pi package directory exposed to pi. The default excludes browser-check when browserCheck.enable is false.";
     };
 
     theme = lib.mkOption {
@@ -61,6 +64,27 @@ in {
       };
       default = {};
       description = "Telegram bridge integration.";
+    };
+
+    browserCheck = lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Install the browser-check CLI on PATH.";
+          };
+
+          package = lib.mkOption {
+            type = lib.types.package;
+            default = self.packages.${pkgs.stdenv.hostPlatform.system}.browser-check;
+            defaultText = lib.literalExpression "inputs.pi-tools.packages.\${pkgs.stdenv.hostPlatform.system}.browser-check";
+            description = "Browser-check CLI package to install into home.packages.";
+          };
+        };
+      };
+      default = {};
+      description = "Browser-check CLI and skill installation. Disable to omit both and their Playwright dependency from the default pi package.";
     };
 
     audioTranscription = lib.mkOption {
@@ -112,7 +136,8 @@ in {
 
   config = lib.mkIf cfg.enable {
     home.packages =
-      lib.optional (cfg.piCliPackage != null) cfg.piCliPackage
+      lib.optional cfg.browserCheck.enable cfg.browserCheck.package
+      ++ lib.optional (cfg.piCliPackage != null) cfg.piCliPackage
       ++ lib.optional cfg.audioTranscription.enable cfg.audioTranscription.package;
 
     home.file = {

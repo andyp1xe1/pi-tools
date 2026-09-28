@@ -1,6 +1,6 @@
 # pi pkm
 
-An experimental org-style **agenda pane** inside pi's TUI — a step toward a pi-native PKM/document substrate (see [`docs/GOAL.md`](./GOAL.md)).
+`pi-pkm` displays an org-style agenda in pi's TUI. The builtin, todo.txt, and Emacs providers supply tasks.
 
 ## What you get
 
@@ -96,10 +96,6 @@ Inside the focused agenda pane:
 - `g` / `G` — first / last item
 - `Esc` — restore passive agenda
 - `q` or `Alt+X` — close agenda
-
-## Status
-
-This is **experimental**. The plan (per `docs/GOAL.md`) is to build small, direct extensions like this one, test specific primitives, and only later architect a coherent rich-document substrate from the proven ideas. Expect the API and provider contract to shift.
 
 ## Smoke test
 
