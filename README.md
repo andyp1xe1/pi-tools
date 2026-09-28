@@ -39,7 +39,7 @@ npm ci
 node bin/browser-check.mjs help
 ```
 
-Pi installs the root Playwright dependency when it installs pi-tools from git. See the [browser-check guide](docs/browser-check.md) for Chrome requirements and the command to put the CLI on `PATH`.
+Pi installs the root Playwright dependency when it installs pi-tools from git. See the [browser-check guide](docs/browser-check.md) for Chrome requirements, FFmpeg for MP4 recording, and the command to put the CLI on `PATH`.
 
 ### Home Manager
 

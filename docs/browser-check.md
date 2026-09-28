@@ -4,7 +4,7 @@
 
 ## Install
 
-Requires Node.js 22 or later, Google Chrome, and a Unix-like system. Linux is tested. Manual login needs a graphical desktop on the machine running the CLI.
+Requires Node.js 22 or later, Google Chrome, and a Unix-like system. Linux is tested. MP4 recording also requires FFmpeg (`ffmpeg` on `PATH` or `FFMPEG_PATH`). The Nix dev shell and Home Manager module include it. Manual login needs a graphical desktop on the machine running the CLI.
 
 From the `pi-tools` repository root:
 
@@ -61,7 +61,10 @@ browser-check rect --session review '[data-card]' --all
 browser-check styles --session review '[data-card]' padding gap min-width --all
 browser-check screenshot --session review mobile.png
 browser-check viewport --session review 1440 900
+browser-check settle --session review '[data-card]'
 ```
+
+`settle` waits for fonts and for the target's position and size to remain steady for 200 ms; without a selector it checks the document root. It does not prove app data is ready: first `wait` for an element that appears with the desired data. Use it after changing the viewport or opening a responsive panel.
 
 `rect` reports viewport-relative border rectangles, client and scroll sizes, scroll offsets, and overflow, display, and visibility properties. A rectangle alone does not prove an overflow bug. Account for padding, borders, transforms, clipping, and intended scrolling. `--all` accepts up to 200 matches and returns an empty array if nothing matches.
 
@@ -105,6 +108,32 @@ To pass a value that starts with `--`, put `--` before positional arguments:
 browser-check fill --session review --role textbox --name Title -- --literal-value
 ```
 
+## Record a video
+
+`record` creates an MP4, not an animated image. To open a new recording session, explicitly provide its profile, URL, and starting dimensions:
+
+```sh
+browser-check record --profile preview --session proof --width 390 --height 844 https://preview.example.com/lesson
+browser-check wait --session proof '[data-editor-ready]'
+browser-check click --session proof --role button --name 'Back to blocks'
+browser-check record --session proof stop
+browser-check close --session proof
+```
+
+To record **after** opening a session, set its viewport and reach the desired page first. `record` then uses that session's current tab, profile, viewport, and page state, without reopening or navigating:
+
+```sh
+browser-check open --profile preview --session proof https://preview.example.com
+browser-check viewport --session proof 390 844
+browser-check wait --session proof '[data-editor-ready]'
+browser-check record --session proof
+# Use the usual click, fill, press, scroll, and screenshot commands.
+browser-check record --session proof stop
+browser-check close --session proof
+```
+
+`record stop` returns the MP4 path while keeping the session open. `close` also finalizes an active recording and returns its path. A recording captures the current viewport at 10 fps, including idle time, without audio; stop recording before resizing. Recording begins after the page opens in the first form, so use the second form if you need to exclude loading or sign-in from the video. Captures can contain private page content; review them before sharing.
+
 ## Capture evidence and handle failures
 
 ```sh
@@ -114,7 +143,7 @@ browser-check screenshot --session review
 browser-check screenshot --session review page.png --full-page
 ```
 
-Relative file paths use your current working directory. The CLI does not overwrite existing screenshots or traces. A failed capture can leave an empty file. On normal close, an active trace is saved to `closing-trace.zip` when possible. The CLI does not record video or take a screenshot after every action.
+Relative file paths use your current working directory. The CLI does not overwrite existing screenshots or traces. A failed capture can leave an empty file. On normal close, an active trace is saved to `closing-trace.zip` when possible. The CLI does not take a screenshot after every action.
 
 Every command except `help` prints one JSON result. Failures exit nonzero and include an error code and message. Chrome diagnostics go to the worker log. Command logs contain command names and times, not evaluation source or filled text. Traces can still contain private content.
 
@@ -128,7 +157,7 @@ Automation controls one tab per session; popups close. There is no frame-specifi
 
 ## Develop
 
-From the repository root:
+From the repository root (with FFmpeg available, for example through `nix develop .`):
 
 ```sh
 npm run check

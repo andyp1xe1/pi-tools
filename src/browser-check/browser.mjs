@@ -2,6 +2,7 @@ import { mkdir, open } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fail, MAX_RESULT } from './shared.mjs';
+import { startVideo } from './video.mjs';
 
 async function unique(locator, { wait = true } = {}) {
   let count = await locator.count();
@@ -38,8 +39,35 @@ export async function operate(browser, request) {
       await page.goto(a[0], { waitUntil: 'domcontentloaded' });
       return { url: page.url() };
     case 'viewport':
+      if (browser.video) fail('VIDEO_ACTIVE', 'Stop recording before changing the viewport.');
       await page.setViewportSize({ width: a[0], height: a[1] });
       return { viewport: page.viewportSize() };
+    case 'settle': {
+      const locator = await unique(page.locator(a[0] || 'html'));
+      const rect = await locator.evaluate(async (element) => {
+        await document.fonts.ready;
+        await new Promise(requestAnimationFrame);
+        let previous, stableSince = performance.now();
+        while (true) {
+          await new Promise(requestAnimationFrame);
+          if (!element.isConnected) throw new Error('Element was removed while waiting for stable layout.');
+          const current = element.getBoundingClientRect();
+          const dimensions = [current.x, current.y, current.width, current.height];
+          if (!previous || dimensions.some((value, index) => Math.abs(value - previous[index]) > 0.5)) {
+            previous = dimensions;
+            stableSince = performance.now();
+          }
+          if (performance.now() - stableSince >= 200) return current.toJSON();
+        }
+      });
+      return { rect, stableForMs: 200 };
+    }
+    case 'record':
+      if (a[0] === 'stop') {
+        if (!browser.video) fail('NO_VIDEO', 'Start recording first.');
+        return { ...await browser.video.stop(), recording: false };
+      }
+      return await startVideo(browser);
     case 'snapshot': {
       const tree = await (await unique(page.locator(a[0] || 'body'))).ariaSnapshot();
       return { tree: tree.slice(0, 12_000), truncated: tree.length > 12_000 };

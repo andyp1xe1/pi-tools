@@ -78,6 +78,69 @@ async function environment(t) {
 }
 
 // These launch only isolated local fixture browsers, never personal profiles or live apps.
+test('MP4 recording from a new or existing session, preserving viewport and page state', { timeout: 120_000 }, async (t) => {
+  const { url, call } = await environment(t);
+  const fresh = await call(['record', '--session', 'fresh', '--profile', 'video', '--width', '390', '--height', '844', url]);
+  assert.equal(fresh.ok, true, JSON.stringify(fresh));
+  assert.equal(fresh.recording, true);
+  assert.equal((await call(['click', '--session', 'fresh', '#toggle'])).ok, true);
+  await sleep(400);
+  assert.equal((await call(['record', '--session', 'fresh'])).error.code, 'VIDEO_ACTIVE');
+  const first = await call(['record', '--session', 'fresh', 'stop']);
+  assert.equal(first.ok, true, JSON.stringify(first));
+  assert.equal(first.recording, false);
+  assert.equal((await readFile(first.path)).subarray(4, 8).toString(), 'ftyp');
+  assert.equal((await stat(first.path)).mode & 0o777, 0o600);
+  assert.equal((await call(['record', '--session', 'fresh', 'stop'])).error.code, 'NO_VIDEO');
+  assert.equal((await call(['close', '--session', 'fresh'])).ok, true);
+
+  assert.equal((await call(['open', '--session', 'existing', '--profile', 'video', url])).ok, true);
+  assert.equal((await call(['click', '--session', 'existing', '#toggle'])).ok, true);
+  assert.equal((await call(['viewport', '--session', 'existing', '500', '360'])).ok, true);
+  const ongoing = await call(['record', '--session', 'existing']);
+  assert.equal(ongoing.ok, true, JSON.stringify(ongoing));
+  assert.deepEqual(ongoing.viewport, { width: 500, height: 360 });
+  assert.equal((await call(['viewport', '--session', 'existing', '600', '400'])).error.code, 'VIDEO_ACTIVE');
+  assert.equal((await call(['eval', '--session', 'existing', 'return !document.querySelector("#late").hidden'])).value, true);
+  await sleep(400);
+  const second = await call(['record', '--session', 'existing', 'stop']);
+  assert.equal(second.ok, true, JSON.stringify(second));
+  assert.equal((await readFile(second.path)).subarray(4, 8).toString(), 'ftyp');
+  const probe = await exec('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name,width,height', '-show_entries', 'format=duration', '-of', 'json', second.path]);
+  const media = JSON.parse(probe.stdout);
+  assert.equal(media.streams[0].codec_name, 'h264');
+  assert.deepEqual([media.streams[0].width, media.streams[0].height], [500, 360]);
+  assert.ok(Number(media.format.duration) >= 0.4, media.format.duration);
+  assert.equal((await call(['record', '--session', 'existing'])).ok, true);
+  await sleep(250);
+  const closed = await call(['close', '--session', 'existing']);
+  assert.equal(closed.ok, true, JSON.stringify(closed));
+  assert.equal((await readFile(closed.video)).subarray(4, 8).toString(), 'ftyp');
+});
+
+test('missing FFmpeg reports a clear failure without stealing the profile', { timeout: 60_000 }, async (t) => {
+  const { url, call } = await environment(t);
+  const unavailable = { FFMPEG_PATH: '/missing/browser-check-ffmpeg' };
+  const failed = await call(['record', '--session', 'new-failure', '--profile', 'preview', '--width', '390', '--height', '844', url], { extraEnv: unavailable });
+  assert.equal(failed.error.code, 'FFMPEG_UNAVAILABLE');
+  assert.equal((await call(['profiles'])).profiles.find((profile) => profile.profile === 'preview').lease, null);
+  assert.equal((await call(['open', '--session', 'existing-failure', '--profile', 'preview', url], { extraEnv: unavailable })).ok, true);
+  const midSession = await call(['record', '--session', 'existing-failure']);
+  assert.equal(midSession.error.code, 'FFMPEG_UNAVAILABLE');
+  assert.equal((await call(['eval', '--session', 'existing-failure', 'return document.title'])).ok, true);
+  assert.equal((await call(['close', '--session', 'existing-failure'])).ok, true);
+});
+
+test('settle waits for fonts and stable geometry without hiding app readiness', { timeout: 60_000 }, async (t) => {
+  const { url, call } = await environment(t);
+  assert.equal((await call(['open', '--session', 'layout', '--profile', 'settle', url])).ok, true);
+  const outcome = await call(['settle', '--session', 'layout', '#editor']);
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.equal(outcome.rect.width, 300);
+  assert.equal(outcome.stableForMs, 200);
+  assert.equal((await call(['close', '--session', 'layout'])).ok, true);
+});
+
 test('real browser: layout, interaction, files, errors, traces, profile reuse and timeouts', { timeout: 180_000 }, async (t) => {
   const { dir, env, url, call } = await environment(t);
   const run = (...args) => call([args[0], '--session', 'review', ...args.slice(1)]);

@@ -69,6 +69,10 @@
         npmDepsHash = "sha256-ztWdXt+/3d6zd/FhgRYIdAuGjCbqUfTaY6CObFIm1xs=";
         npmFlags = ["--omit=dev"];
         dontNpmBuild = true;
+        nativeBuildInputs = [pkgs.makeWrapper];
+        postInstall = ''
+          wrapProgram "$out/bin/browser-check" --set-default FFMPEG_PATH ${pkgs.ffmpeg}/bin/ffmpeg
+        '';
       };
 
       default = mkPiTools true;
@@ -81,6 +85,7 @@
       default = pkgs.mkShell {
         packages = [
           pkgs.nodejs_22
+          pkgs.ffmpeg
         ];
       };
     });
