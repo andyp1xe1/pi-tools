@@ -4,6 +4,7 @@ import { parse } from '../../src/browser-check/cli.mjs';
 import { paths, name, webURL } from '../../src/browser-check/shared.mjs';
 
 test('validates sessions, URLs, dimensions and option combinations', () => {
+  assert.deepEqual(parse(['version']).positional, []);
   assert.equal(parse(['login', '--profile', 'mentor-preview', 'https://example.org']).options.session, 'mentor-preview');
   assert.equal(parse(['open', '--session', 'review', '--profile', 'preview', 'https://example.org']).options.width, 1440);
   assert.deepEqual(parse(['viewport', '--session', 'review', '390', '844']).positional, [390, 844]);
@@ -24,6 +25,8 @@ test('validates sessions, URLs, dimensions and option combinations', () => {
     ['fill', '--session', 'review', '--text', 'Title'],
     ['eval', '--session', 'review', '--file', 'x.js', 'extra'],
     ['close', '--session', 'review', '--unknown'],
+    ['version', '--session', 'review'],
+    ['version', 'extra'],
     ['wait', '--session', 'review', '#thing', '--state', 'banana'],
     ['snapshot', '--session', 'review', '--timeout', '-1'],
     ['scroll', '--session', 'review'],

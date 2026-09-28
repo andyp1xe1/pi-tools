@@ -20,7 +20,7 @@
 | `latex-renderer`      | Renders block LaTeX as images in pi.                                   | [LaTeX renderer](docs/latex-renderer.md)             |
 | `pi-pkm`              | Displays tasks from the builtin, todo.txt, and Emacs agenda providers. | [Pi PKM](docs/pi-pkm.md)                             |
 | `telegram`            | Connects a Telegram chat to a pi session.                              | [Telegram bridge](docs/telegram.md)                  |
-| `browser-check`       | Measures pages and interacts with Chrome through a local CLI.          | [Browser-check guide](docs/browser-check.md)       |
+| `browser-check`       | Measures pages and interacts with Chrome through a local CLI.          | [Browser-check skill](skills/browser-check/SKILL.md) |
 
 The `nixos-dev-shells`, `btca-local`, `linear-cli`, and [`browser-check`](skills/browser-check/SKILL.md) skills live in `skills/`.
 
@@ -39,7 +39,7 @@ npm ci
 node bin/browser-check.mjs help
 ```
 
-Pi installs the root Playwright dependency when it installs pi-tools from git. See the [browser-check guide](docs/browser-check.md) for Chrome requirements, FFmpeg for MP4 recording, and the command to put the CLI on `PATH`.
+Pi installs the root Playwright dependency when it installs pi-tools from git. The [browser-check skill](skills/browser-check/SKILL.md) covers Chrome, FFmpeg for MP4 recording, and CLI setup. Run `npm link` to put the source-checkout CLI on `PATH`.
 
 ### Home Manager
 

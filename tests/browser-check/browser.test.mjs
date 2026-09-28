@@ -42,7 +42,8 @@ async function environment(t) {
     if (req.url === '/slow') {
       const timer = setTimeout(() => res.end(fixture), 2000);
       res.on('close', () => clearTimeout(timer));
-    } else res.end(fixture);
+    } else if (req.url === '/app-delay') res.end('<main style="height:200px">Loading <span id="ready" hidden>Data ready</span></main><script>setTimeout(()=>{document.querySelector("#ready").hidden=false},3500)</script>');
+    else res.end(fixture);
   });
   await new Promise((resolve) => http.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${http.address().port}`;
@@ -78,21 +79,48 @@ async function environment(t) {
 }
 
 // These launch only isolated local fixture browsers, never personal profiles or live apps.
+test('version reports revision and checks FFmpeg without creating session directories', { timeout: 30_000 }, async (t) => {
+  const { env, call } = await environment(t);
+  const version = await call(['version'], { extraEnv: { BROWSER_CHECK_REVISION: 'test-revision' } });
+  assert.equal(version.revision, 'test-revision');
+  assert.equal(version.ffmpeg.available, true);
+  assert.equal(version.version, '0.0.1');
+  const missing = await call(['version'], { extraEnv: { FFMPEG_PATH: '/missing/browser-check-ffmpeg' } });
+  assert.equal(missing.ffmpeg.available, false);
+  assert.equal(missing.ffmpeg.executable, '/missing/browser-check-ffmpeg');
+  await assert.rejects(stat(env.BROWSER_CHECK_HOME), { code: 'ENOENT' });
+});
+
 test('MP4 recording from a new or existing session, preserving viewport and page state', { timeout: 120_000 }, async (t) => {
   const { url, call } = await environment(t);
-  const fresh = await call(['record', '--session', 'fresh', '--profile', 'video', '--width', '390', '--height', '844', url]);
+  const fresh = await call(['record', '--session', 'fresh', '--profile', 'video', '--width', '391', '--height', '845', url]);
   assert.equal(fresh.ok, true, JSON.stringify(fresh));
+  assert.deepEqual(fresh.viewport, { width: 391, height: 845 });
   assert.equal(fresh.recording, true);
+  assert.equal(fresh.status, 'open');
+  assert.equal(fresh.navigationWaitedFor, 'domcontentloaded');
   assert.equal((await call(['click', '--session', 'fresh', '#toggle'])).ok, true);
   await sleep(400);
   assert.equal((await call(['record', '--session', 'fresh'])).error.code, 'VIDEO_ACTIVE');
   const first = await call(['record', '--session', 'fresh', 'stop']);
   assert.equal(first.ok, true, JSON.stringify(first));
   assert.equal(first.recording, false);
-  assert.equal((await readFile(first.path)).subarray(4, 8).toString(), 'ftyp');
-  assert.equal((await stat(first.path)).mode & 0o777, 0o600);
+  assert.equal(first.video.format, 'mp4');
+  assert.equal(first.video.codec, 'h264');
+  assert.equal(first.video.fps, 10);
+  assert.deepEqual([first.video.width, first.video.height], [390, 844]);
+  const encoded = JSON.parse((await exec('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json', first.video.path])).stdout);
+  assert.deepEqual([encoded.streams[0].width, encoded.streams[0].height], [first.video.width, first.video.height]);
+  assert.equal(first.video.bytes, (await stat(first.video.path)).size);
+  assert.ok(first.video.durationSeconds >= 0.4);
+  assert.equal((await readFile(first.video.path)).subarray(4, 8).toString(), 'ftyp');
+  assert.equal((await stat(first.video.path)).mode & 0o777, 0o600);
   assert.equal((await call(['record', '--session', 'fresh', 'stop'])).error.code, 'NO_VIDEO');
-  assert.equal((await call(['close', '--session', 'fresh'])).ok, true);
+  const finished = await call(['close', '--session', 'fresh']);
+  assert.equal(finished.removed, true);
+  assert.deepEqual(finished.video, first.video);
+  assert.equal((await call(['status', '--session', 'fresh'])).error.code, 'SESSION_NOT_FOUND');
+  assert.equal((await call(['sessions'])).sessions.length, 0);
 
   assert.equal((await call(['open', '--session', 'existing', '--profile', 'video', url])).ok, true);
   assert.equal((await call(['click', '--session', 'existing', '#toggle'])).ok, true);
@@ -105,8 +133,8 @@ test('MP4 recording from a new or existing session, preserving viewport and page
   await sleep(400);
   const second = await call(['record', '--session', 'existing', 'stop']);
   assert.equal(second.ok, true, JSON.stringify(second));
-  assert.equal((await readFile(second.path)).subarray(4, 8).toString(), 'ftyp');
-  const probe = await exec('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name,width,height', '-show_entries', 'format=duration', '-of', 'json', second.path]);
+  assert.equal((await readFile(second.video.path)).subarray(4, 8).toString(), 'ftyp');
+  const probe = await exec('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name,width,height', '-show_entries', 'format=duration', '-of', 'json', second.video.path]);
   const media = JSON.parse(probe.stdout);
   assert.equal(media.streams[0].codec_name, 'h264');
   assert.deepEqual([media.streams[0].width, media.streams[0].height], [500, 360]);
@@ -115,7 +143,12 @@ test('MP4 recording from a new or existing session, preserving viewport and page
   await sleep(250);
   const closed = await call(['close', '--session', 'existing']);
   assert.equal(closed.ok, true, JSON.stringify(closed));
-  assert.equal((await readFile(closed.video)).subarray(4, 8).toString(), 'ftyp');
+  assert.equal(closed.removed, true);
+  assert.equal(closed.video.bytes, (await stat(closed.video.path)).size);
+  assert.equal((await readFile(closed.video.path)).subarray(4, 8).toString(), 'ftyp');
+  assert.equal((await call(['sessions'])).sessions.length, 0);
+  assert.match((await call(['sessions'])).message, /close removes records/);
+  assert.equal((await call(['profiles'])).profiles.find((profile) => profile.profile === 'video').lease, null);
 });
 
 test('missing FFmpeg reports a clear failure without stealing the profile', { timeout: 60_000 }, async (t) => {
@@ -138,7 +171,22 @@ test('settle waits for fonts and stable geometry without hiding app readiness', 
   assert.equal(outcome.ok, true, JSON.stringify(outcome));
   assert.equal(outcome.rect.width, 300);
   assert.equal(outcome.stableForMs, 200);
+  assert.equal(outcome.selector, '#editor');
+  assert.equal(outcome.geometryOnly, true);
   assert.equal((await call(['close', '--session', 'layout'])).ok, true);
+});
+
+test('open only waits for navigation; wait for app data before settling geometry', { timeout: 60_000 }, async (t) => {
+  const { url, call } = await environment(t);
+  const opened = await call(['open', '--session', 'loading', '--profile', 'preview', `${url}/app-delay`]);
+  assert.equal(opened.status, 'open');
+  assert.equal(opened.navigationWaitedFor, 'domcontentloaded');
+  const geometry = await call(['settle', '--session', 'loading', 'main']);
+  assert.equal(geometry.geometryOnly, true);
+  assert.equal((await call(['eval', '--session', 'loading', 'return document.querySelector("#ready").hidden'])).value, true);
+  assert.equal((await call(['wait', '--session', 'loading', '#ready'])).state, 'visible');
+  assert.equal((await call(['settle', '--session', 'loading', '#ready'])).selector, '#ready');
+  assert.equal((await call(['close', '--session', 'loading'])).removed, true);
 });
 
 test('real browser: layout, interaction, files, errors, traces, profile reuse and timeouts', { timeout: 180_000 }, async (t) => {
@@ -146,7 +194,8 @@ test('real browser: layout, interaction, files, errors, traces, profile reuse an
   const run = (...args) => call([args[0], '--session', 'review', ...args.slice(1)]);
   let result = await call(['open', '--session', 'review', '--profile', 'preview', '--width', '390', '--height', '844', url]);
   assert.equal(result.ok, true, JSON.stringify(result));
-  assert.equal(result.status, 'ready');
+  assert.equal(result.status, 'open');
+  assert.equal(result.navigationWaitedFor, 'domcontentloaded');
   assert.deepEqual(result.viewport, { width: 390, height: 844 });
   assert.equal((await stat(paths(env).home)).mode & 0o777, 0o700);
   assert.match((await run('snapshot')).tree, /Layout fixture/);
@@ -189,7 +238,7 @@ test('real browser: layout, interaction, files, errors, traces, profile reuse an
   await run('eval', 'return document.title');
   const trace = await run('trace', 'stop');
   assert.equal((await readFile(trace.path)).subarray(0, 2).toString(), 'PK');
-  assert.equal((await run('goto', `${url}/login`)).ok, true);
+  assert.equal((await run('goto', `${url}/login`)).navigationWaitedFor, 'domcontentloaded');
   await run('wait', 'body');
   assert.equal((await run('eval', 'return localStorage.getItem("fixture_user")')).value, 'teacher');
   assert.equal((await call(['open', '--session', 'other', '--profile', 'preview', url])).error.code, 'PROFILE_BUSY');
@@ -264,6 +313,9 @@ test('ordinary Chrome login handoff, exclusive profile ownership and cookie reus
     await sleep(50);
   }
   assert.equal(status.status, 'closed', JSON.stringify(status));
+  const removed = await call(['close', '--session', 'manual']);
+  assert.equal(removed.removed, true);
+  assert.equal((await call(['status', '--session', 'manual'])).error.code, 'SESSION_NOT_FOUND');
   const opened = await call(['open', '--session', 'after-login', '--profile', 'manual', url]);
   assert.equal(opened.ok, true, JSON.stringify(opened));
   const authenticated = await call(['eval', '--session', 'after-login', 'return {cookie:document.cookie, user:localStorage.getItem("fixture_user")};']);

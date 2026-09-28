@@ -47,7 +47,7 @@ async function stop(status = 'closed', error) {
       if (!initialized && launchWork) await launchWork.catch(() => {});
       if (context) {
         if (browser?.video) {
-          try { const video = await browser.video.stop(); state.video = video.path; }
+          try { state.video = await browser.video.stop(); }
           catch (error) { videoError = error; }
         }
         if (browser?.tracing) await context.tracing.stop({ path: join(runDir, 'closing-trace.zip') }).catch(() => {});
@@ -84,12 +84,12 @@ async function dispatch(command) {
     if (state.mode === 'login' && !command.options.force) fail('NEEDS_USER', 'Close the login window yourself, or explicitly pass --force to terminate it.');
     await stop();
     if (state.status === 'failed') fail('CLOSE_FAILED', state.error?.message || 'Session teardown failed.');
-    return { status: state.status, ...(state.video ? { video: state.video } : {}) };
+    return { ...(state.video ? { video: state.video } : {}) };
   }
   if (state.mode === 'login') fail('NEEDS_USER', 'This is a manual login window. Sign in, close it, then open an automation session using the profile.');
   const result = await operate(browser, command);
   await update({ url: page.url(), viewport: page.viewportSize(),
-    ...(command.command === 'record' ? { recording: Boolean(browser.video), ...(result.path ? { video: result.path } : {}) } : {}),
+    ...(command.command === 'record' ? { recording: Boolean(browser.video), ...(result.video ? { video: result.video } : {}) } : {}),
   });
   return result;
 }
@@ -191,7 +191,7 @@ async function launch() {
     if (stopping) return;
     if (request.command === 'record') await startVideo(browser);
     await listen();
-    await update({ status: 'ready', url: page.url(), viewport: page.viewportSize(), recording: Boolean(browser.video) });
+    await update({ status: 'open', url: page.url(), viewport: page.viewportSize(), recording: Boolean(browser.video) });
     initialized = true;
     context.on('close', () => { if (!stopping) void stop(); });
   }

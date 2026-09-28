@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fail, sleep } from './shared.mjs';
@@ -85,7 +85,10 @@ export async function startVideo(browser) {
           encoder.stdin.end();
           const { code, signal } = await finished;
           if (encoderError || code !== 0) fail('VIDEO_FAILED', `FFmpeg could not finish the MP4 (${encoderError?.message || diagnostics || signal || code}).`);
-          return { path: output, viewport, durationSeconds: frames / FPS };
+          const file = await stat(output);
+          if (!file.size) fail('VIDEO_FAILED', 'FFmpeg created an empty MP4.');
+          return { path: output, format: 'mp4', codec: 'h264', width: viewport.width - viewport.width % 2,
+            height: viewport.height - viewport.height % 2, fps: FPS, durationSeconds: frames / FPS, bytes: file.size };
         } catch (error) {
           await rm(output, { force: true }).catch(() => {});
           throw error;

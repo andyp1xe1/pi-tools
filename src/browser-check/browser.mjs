@@ -37,7 +37,7 @@ export async function operate(browser, request) {
   switch (command) {
     case 'goto':
       await page.goto(a[0], { waitUntil: 'domcontentloaded' });
-      return { url: page.url() };
+      return { url: page.url(), navigationWaitedFor: 'domcontentloaded' };
     case 'viewport':
       if (browser.video) fail('VIDEO_ACTIVE', 'Stop recording before changing the viewport.');
       await page.setViewportSize({ width: a[0], height: a[1] });
@@ -60,12 +60,12 @@ export async function operate(browser, request) {
           if (performance.now() - stableSince >= 200) return current.toJSON();
         }
       });
-      return { rect, stableForMs: 200 };
+      return { selector: a[0] || 'html', rect, stableForMs: 200, geometryOnly: true };
     }
     case 'record':
       if (a[0] === 'stop') {
         if (!browser.video) fail('NO_VIDEO', 'Start recording first.');
-        return { ...await browser.video.stop(), recording: false };
+        return { video: await browser.video.stop(), recording: false };
       }
       return await startVideo(browser);
     case 'snapshot': {

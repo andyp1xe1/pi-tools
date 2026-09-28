@@ -1,5 +1,6 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { open, readFile, readdir, mkdir, rm } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -9,17 +10,19 @@ import {
 
 export const HELP = `browser-check — direct browser inspection (JSON output)
 
+  version                                    Show revision and FFmpeg availability
+
 Login / sessions:
   login --profile NAME [--session NAME] URL   Open ordinary Chrome for manual login
   open --profile NAME --session NAME URL [--headed] [--width 1440 --height 900]
   record --profile NAME --session NAME --width W --height H URL   Open and record MP4
   record --session NAME                     Record the current tab and viewport
   record --session NAME stop                Finish MP4; keep the session open
-  settle --session NAME [SELECTOR]          Wait for fonts and stable element bounds
-  status --session NAME                      Report browser/login state
-  sessions                                   List sessions (including closed ones)
+  settle --session NAME [SELECTOR]          Wait for fonts and target bounds, not app data
+  status --session NAME                      Report an existing browser/login record
+  sessions                                   List session records; close removes them
   profiles                                   List saved profiles and their leases
-  close --session NAME [--force]              Close automation; --force required for login
+  close --session NAME [--force]             Stop browser and remove session record
 
 Inspection (all require --session NAME):
   snapshot [SELECTOR]                        Accessibility tree (bounded)
@@ -52,7 +55,7 @@ const OPTIONS = {
   open: [...COMMON, 'profile', 'headed', 'width', 'height'],
   record: [...COMMON, 'profile', 'headed', 'width', 'height'],
   settle: COMMON,
-  status: ['session'], sessions: [], profiles: [], close: ['session', 'force', 'timeout'],
+  version: [], status: ['session'], sessions: [], profiles: [], close: ['session', 'force', 'timeout'],
   snapshot: COMMON, eval: [...COMMON, 'file'], rect: [...COMMON, 'all'], styles: [...COMMON, 'all'],
   screenshot: [...COMMON, 'full-page'], viewport: COMMON, goto: COMMON,
   click: [...COMMON, ...TARGET, 'x', 'y'], fill: [...COMMON, ...TARGET],
@@ -86,7 +89,7 @@ export function parse(argv) {
   const timeout = integer(options.timeout, defaultTimeout, 100, 120_000, 'Timeout');
   if (options.profile !== undefined) name(options.profile, 'Profile');
   if (command === 'login') options.session ??= options.profile;
-  if (!['sessions', 'profiles'].includes(command)) name(options.session, 'Session');
+  if (!['version', 'sessions', 'profiles'].includes(command)) name(options.session, 'Session');
   const request = { command, options, positional, timeout };
   function count(min, max = min) {
     if (positional.length < min || positional.length > max) fail('INVALID_ARGUMENT', `Invalid arguments for ${command}. Run browser-check help.`);
@@ -107,7 +110,7 @@ export function parse(argv) {
       if (positional[0] !== undefined && positional[0] !== 'stop') fail('INVALID_ARGUMENT', 'Use record --session NAME stop, or supply --profile, --width, --height and URL to open a recording session.');
       if (options.width !== undefined || options.height !== undefined || options.headed) fail('INVALID_ARGUMENT', 'An existing session keeps its viewport. Use viewport before record.');
     }
-  } else if (['status', 'sessions', 'profiles', 'close'].includes(command)) count(0);
+  } else if (['version', 'status', 'sessions', 'profiles', 'close'].includes(command)) count(0);
   else if (command === 'settle') count(0, 1);
   else if (command === 'goto') { count(1); positional[0] = webURL(positional[0]); }
   else if (command === 'viewport') {
@@ -143,7 +146,7 @@ export function parse(argv) {
 async function stateFor(sp) {
   const state = await jsonFile(sp.state);
   if (!state) return { status: 'starting', log: sp.log };
-  if (['ready', 'needs_user', 'starting'].includes(state.status) && !alive(state.pid)) return { ...state, status: 'stale', message: 'Worker is gone. Profile lock may need manual inspection; no process was killed.' };
+  if (['open', 'needs_user', 'starting'].includes(state.status) && !alive(state.pid)) return { ...state, status: 'stale', message: 'Worker is gone. Profile lock may need manual inspection; no process was killed.' };
   return state;
 }
 async function start(p, request) {
@@ -170,12 +173,24 @@ async function start(p, request) {
     const state = await jsonFile(sp.state);
     if (state && state.status !== 'starting') {
       if (state.status === 'failed') return { ok: false, error: state.error, session: request.options.session, log: sp.log };
-      return { ok: true, ...state };
+      return { ok: true, ...state, ...(request.command === 'login' ? {} : { navigationWaitedFor: 'domcontentloaded' }) };
     }
     if (!alive(child.pid)) fail('START_FAILED', `Worker exited during startup. Inspect ${sp.log}`);
     await sleep(50);
   }
   fail('START_TIMEOUT', `Startup did not respond. Inspect ${sp.log} and status before retrying.`);
+}
+
+function versionInfo() {
+  const root = fileURLToPath(new URL('../..', import.meta.url));
+  const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+  const executable = process.env.FFMPEG_PATH || 'ffmpeg';
+  const ffmpeg = spawnSync(executable, ['-version'], { encoding: 'utf8', timeout: 3000 });
+  const git = process.env.BROWSER_CHECK_REVISION ? null : spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 2000 });
+  const revision = process.env.BROWSER_CHECK_REVISION || (git?.status === 0 ? git.stdout.trim() : null);
+  const changes = git?.status === 0 ? spawnSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8', timeout: 2000 }) : null;
+  return { ok: true, version: pkg.version, revision, ...(changes?.status === 0 ? { dirty: Boolean(changes.stdout.trim()) } : {}),
+    ffmpeg: { available: ffmpeg.status === 0, executable } };
 }
 
 async function readStdin() {
@@ -192,6 +207,7 @@ export async function main(argv = process.argv.slice(2)) {
   try {
     const request = parse(argv);
     if (request.command === 'help') { console.log(HELP); return; }
+    if (request.command === 'version') { console.log(JSON.stringify(versionInfo())); return; }
     const p = paths();
     await initialize(p);
     if (request.command === 'eval') {
@@ -206,24 +222,29 @@ export async function main(argv = process.argv.slice(2)) {
     if (['login', 'open'].includes(request.command) || (request.command === 'record' && request.options.profile)) response = await start(p, request);
     else if (request.command === 'sessions') {
       const entries = await readdir(p.runtime, { withFileTypes: true });
-      response = { ok: true, sessions: await Promise.all(entries.filter((e) => e.isDirectory()).map((e) => stateFor(sessionPaths(p, e.name)))) };
+      const sessions = await Promise.all(entries.filter((e) => e.isDirectory()).map((e) => stateFor(sessionPaths(p, e.name))));
+      response = { ok: true, sessions, ...(sessions.length ? {} : { message: 'No session records. close removes records; profiles and artifacts remain.' }) };
     } else if (request.command === 'profiles') {
       const entries = await readdir(p.profiles, { withFileTypes: true });
       response = { ok: true, profiles: await Promise.all(entries.filter((e) => e.isDirectory()).map(async (e) => ({ profile: e.name, lease: await jsonFile(resolve(p.profiles, e.name, 'lease/owner.json')) }))) };
     } else {
       const sp = sessionPaths(p, request.options.session);
       const state = await jsonFile(sp.state);
-      if (!state) fail('SESSION_NOT_FOUND', `No initialized session named ${request.options.session}.`);
+      if (!state) fail('SESSION_NOT_FOUND', `No session record named ${request.options.session}. close removes records; check sessions or open a new session with a saved profile.`);
       if (request.command === 'status') response = { ok: true, ...await stateFor(sp) };
       else if (request.command === 'close' && !alive(state.pid)) {
         // Never remove a profile lease here: a crashed worker may have left Chrome running.
         await rm(sp.dir, { recursive: true, force: true });
-        response = { ok: true, status: 'closed', session: request.options.session, message: 'Removed stopped session metadata. Any stale profile lease was preserved for inspection.' };
+        response = { ok: true, session: request.options.session, removed: true, profile: state.profile, artifacts: state.artifacts,
+          ...(state.video ? { video: state.video } : {}), message: 'Removed stopped session record. Any stale profile lease was preserved for inspection.' };
       } else {
         response = await rpc(sp.socket, request, request.timeout + 10_000);
         if (request.command === 'close' && response.ok) {
           for (let i = 0; i < 100 && alive(state.pid); i++) await sleep(50);
-          if (!alive(state.pid)) await rm(sp.dir, { recursive: true, force: true });
+          const removed = !alive(state.pid);
+          if (removed) await rm(sp.dir, { recursive: true, force: true });
+          response = { ...response, removed, profile: state.profile, artifacts: state.artifacts,
+            ...(!removed ? { message: 'Worker is still stopping. Inspect status before reusing the session name.' } : {}) };
         }
       }
     }

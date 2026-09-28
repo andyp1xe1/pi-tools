@@ -71,7 +71,9 @@
         dontNpmBuild = true;
         nativeBuildInputs = [pkgs.makeWrapper];
         postInstall = ''
-          wrapProgram "$out/bin/browser-check" --set-default FFMPEG_PATH ${pkgs.ffmpeg}/bin/ffmpeg
+          wrapProgram "$out/bin/browser-check" \
+            --set-default FFMPEG_PATH ${pkgs.ffmpeg}/bin/ffmpeg \
+            --set BROWSER_CHECK_REVISION ${self.rev or (self.dirtyRev or "unknown")}
         '';
       };
 
