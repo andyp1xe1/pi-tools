@@ -3,11 +3,21 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+
+    herdr-nix = {
+      url = "github:herdrdev/herdr-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    herdr-src = {
+      url = "github:herdrdev/herdr";
+      flake = false;
+    };
   };
 
   outputs = {
     self,
     nixpkgs,
+    ...
   }: let
     systems = [
       "x86_64-linux"

@@ -1,39 +1,17 @@
 # Audio transcription
 
-`audio-transcription.ts` registers `transcribe_audio` when a `whisper` executable is available on `PATH`.
-
-The tool is the audio counterpart to inspecting an image with `read`. It remains explicit because long recordings can require substantial CPU time.
-
-## Usage
+`transcribe_audio` transcribes a local audio file with Whisper. The tool requires `whisper` on `PATH`.
 
 ```text
 transcribe_audio({ path: "/path/to/recording.ogg" })
 ```
 
-Optional parameters:
+- `model` selects a Whisper model. The default is `base`.
+- `language` sets the spoken language, such as `en`. Omit it for detection.
+- `PI_WHISPER_MODEL` and `PI_WHISPER_LANGUAGE` set process-wide defaults.
 
-- `model`: Whisper model name. Defaults to `base`.
-- `language`: spoken language code such as `en`. When omitted, Whisper detects the language.
+Long transcripts include a path to the complete text.
 
-Set process-wide defaults with:
+Enable Whisper with `programs.pi-tools.audioTranscription.enable = true;`. Override its package with `audioTranscription.package`.
 
-```bash
-export PI_WHISPER_MODEL=small
-export PI_WHISPER_LANGUAGE=en
-```
-
-Large results are truncated to pi's tool-output limits; the tool returns a path to the complete transcript.
-
-## Nix integration
-
-The pi-tools Home Manager module can install Whisper declaratively:
-
-```nix
-programs.pi-tools.audioTranscription.enable = true;
-```
-
-The default package is `pkgs.openai-whisper` and can be overridden through `programs.pi-tools.audioTranscription.package`.
-
-## Telegram
-
-See [telegram.md](telegram.md) to enable automatic voice-note transcription.
+The [Telegram bridge](telegram.md) transcribes voice messages when this feature is enabled.

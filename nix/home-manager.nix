@@ -29,6 +29,8 @@
     packages = cfg.recommendedPackages ++ cfg.extraPackages ++ [packageEntry];
   };
 in {
+  imports = [(import ./herdr.nix {inherit self;})];
+
   options.programs.pi-tools = {
     enable = lib.mkEnableOption "pi-tools opinionated pi configuration";
 

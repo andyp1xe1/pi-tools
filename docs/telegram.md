@@ -1,48 +1,27 @@
 # Telegram bridge
 
-The Telegram bridge forwards private messages into one connected pi session and streams replies back. See [`src/telegram/NOTICE.md`](../src/telegram/NOTICE.md) for attribution.
+The bridge forwards private Telegram messages into a connected Pi session and streams its replies.
 
-## Enable with Home Manager
+Enable it with Home Manager:
 
 ```nix
 programs.pi-tools = {
-  enable = true;
-  telegram.enable = true;
-  audioTranscription.enable = true; # Optional voice transcription
+	enable = true;
+	telegram.enable = true;
+	audioTranscription.enable = true;
 };
 ```
 
-After activating the configuration, start pi and run:
+In Pi, run `/telegram-setup`, then `/telegram-connect`. The setup stores secrets and pairing state in `~/.pi/agent/telegram.json`, outside Nix.
 
-```text
-/telegram-setup
-/telegram-connect
-```
+- `/telegram-disconnect` stops polling.
+- `/telegram-new` starts a fresh Pi session and reconnects.
+- `/telegram-status` shows the connection state.
 
-The first command stores the bot configuration in `~/.pi/agent/telegram.json`. Runtime configuration, pairing state, and secrets remain outside Nix.
+Only one local Pi session can connect to a bot. Disconnect that session before connecting another. Conflicts with clients on other machines stop the bridge.
 
-## Streaming and connection ownership
+Replies update in place. Thinking and tool results stay private. Voice messages include transcripts when audio transcription is enabled.
 
-Streaming uses real Telegram messages: each assistant text message is sent once, then edited in place as it grows. Commentary/planning text and final answers have separate bubbles. Long replies continue in additional bubbles. Thinking and tool results remain invisible; activity uses the typing indicator, not blank or “…” placeholder messages. Aborted partial replies remain in place.
+Messages received during compaction wait in memory. Disconnect pauses the queue. Session shutdown clears it.
 
-Only one local pi session can connect to a given bot. A second `/telegram-connect` refuses before touching Telegram or updating configuration; disconnect the owner first. On Linux, the ownership lock also releases on a process crash. Polling conflicts with clients on other machines stop the bridge instead of retrying forever.
-
-Messages waiting during compaction are queued in order and delivered when pi can safely accept them. Disconnect pauses pending input; reconnecting that session resumes it. The queue is in memory and is cleared on session shutdown.
-
-See [Code boundaries and Telegram lifecycle](architecture.md) for the implementation model.
-
-## Voice messages
-
-With audio transcription enabled, voice prompts include a transcript and the original path. Other audio files remain attachments until pi calls `transcribe_audio`.
-
-## Commands
-
-The bridge registers `/start`, `/help`, `/new`, `/model`, `/thinking`, `/status`, `/compact`, and `/stop` with Telegram when it connects. Model and thinking commands use Telegram button menus. `/new` starts a clean pi thread and reconnects the bridge. Messages received during compaction are held until compaction finishes.
-
-- `/telegram-setup` — configure the bot token.
-- `/telegram-connect` — connect the current pi session.
-- `/telegram-disconnect` — stop polling.
-- `/telegram-new` — start a new pi thread and reconnect the bridge.
-- `/telegram-status` — show bridge status.
-
-Inside Telegram, the registered commands are handled directly by the bridge.
+Telegram commands include `/new`, `/model`, `/thinking`, `/status`, `/compact`, and `/stop`. See [the architecture](architecture.md) for lifecycle details and [the notice](../src/telegram/NOTICE.md) for attribution.

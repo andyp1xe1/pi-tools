@@ -20,7 +20,7 @@
 | `latex-renderer`      | Renders block LaTeX as images in pi.                                   | [LaTeX renderer](docs/latex-renderer.md)             |
 | `pi-pkm`              | Displays tasks from the builtin, todo.txt, and Emacs agenda providers. | [Pi PKM](docs/pi-pkm.md)                             |
 | `telegram`            | Connects a Telegram chat to a pi session.                              | [Telegram bridge](docs/telegram.md)                  |
-| `browser-check`       | Measures pages and interacts with Chrome through a local CLI.          | [Browser-check skill](skills/browser-check/SKILL.md) |
+| `browser-check`       | Measures pages and interacts with Chrome through a local CLI.          | [Browser check](docs/browser-check.md)               |
 
 The `nixos-dev-shells`, `btca-local`, `linear-cli`, and [`browser-check`](skills/browser-check/SKILL.md) skills live in `skills/`.
 
@@ -59,6 +59,8 @@ programs.pi-tools = {
 With `programs.pi-tools.enable = true`, the module adds the Nix-built `browser-check` executable to `PATH` through `home.packages`. Set `programs.pi-tools.browserCheck.enable = false;` to omit the CLI, its skill, and Playwright from the default Nix package. Set `programs.pi-tools.browserCheck.package` to use a different CLI build. The module also writes pi settings and installs `piCliPackage` if supplied. The `telegram` and `audioTranscription` options are off unless enabled.
 
 The default pi theme is `gruvbox-dark`. The module also recommends `pi-web-access`. Set `theme = null;` or `recommendedPackages = [];` to omit either default. Use `extraPackages` and `settings` for other pi settings.
+
+The module also installs Herdr with Gruvbox, upstream agent integrations, and a Herdr skill. Global Pi instructions keep delegated work in visible panes with saved sessions. Set `programs.pi-tools.herdr.enable = false;` to disable this setup.
 
 ## Develop
 
