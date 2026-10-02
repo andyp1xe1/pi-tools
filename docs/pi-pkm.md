@@ -107,5 +107,5 @@ The `builtin` provider is always available, so this works without Emacs and will
 
 ## Source
 
-- `extensions/pi-pkm.ts` (re-exports `src/pi-pkm/index.ts`)
+- `extensions/pi-pkm.ts` (calls `registerPiPkm` in `src/pi-pkm/index.ts`)
 - `src/pi-pkm/agenda/`

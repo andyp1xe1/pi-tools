@@ -29,7 +29,9 @@
     "format": "biome format --write .",
     "lint": "biome lint .",
     "typecheck": "tsc --noEmit",
-    "test:browser-check": "node --test tests/browser-check/*.test.mjs"
+    "test:browser-check": "node --test tests/browser-check/*.test.mjs",
+    "test:telegram": "node --experimental-transform-types --test tests/telegram/*.test.mjs",
+    "test:extensions": "node --experimental-transform-types --test tests/extensions/*.test.mjs"
   },
   "dependencies": {
     "playwright": "1.63.0"

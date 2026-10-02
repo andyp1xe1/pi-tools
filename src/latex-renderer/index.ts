@@ -11,7 +11,7 @@ import type { LatexDetails, RenderMode } from "./types.ts";
 
 const SHOWCASE_FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "fixtures", "latex", "showcase.md");
 
-export default function (pi: ExtensionAPI) {
+export function registerLatexRenderer(pi: ExtensionAPI) {
   pi.registerFlag(RENDER_MODE_FLAG, {
     description: "Where render_latex shows rich output: 'message' or 'tool'",
     type: "string",

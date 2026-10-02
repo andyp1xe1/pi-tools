@@ -39,7 +39,7 @@ Output is shown via `ctx.ui.notify` — it goes to the user, not the model.
 - Reusable shells dir: `~/dev/pi-agent-shells` (matches the layout produced by [`dev-shell-manager`](./dev-shell-manager.md))
 - "Nag for Nix config" threshold: 5 occurrences
 
-These are constants in the source; tweak them in `extensions/nix-env-feedback.ts` if needed.
+These are constants in the source; tweak them in `src/nix-env-feedback/index.ts` if needed.
 
 ## Pairs with
 
@@ -48,4 +48,5 @@ These are constants in the source; tweak them in `extensions/nix-env-feedback.ts
 
 ## Source
 
-- `extensions/nix-env-feedback.ts`
+- `extensions/nix-env-feedback.ts` — entrypoint.
+- `src/nix-env-feedback/index.ts` — registration and implementation.

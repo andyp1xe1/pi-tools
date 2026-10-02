@@ -22,10 +22,15 @@ class TelegramRequestError extends Error {
     message: string,
     readonly retryable: boolean,
     readonly retryAfterMs?: number,
+    readonly code?: number,
   ) {
     super(message);
     this.name = "TelegramRequestError";
   }
+}
+
+export function isPollingConflict(error: unknown): boolean {
+  return error instanceof TelegramRequestError && error.code === 409;
 }
 
 export function isAbortError(error: unknown): boolean {
@@ -71,6 +76,7 @@ export class TelegramClient {
             data.description || `Telegram API ${method} failed with HTTP ${response.status}`,
             response.status === 429 || response.status >= 500,
             data.parameters?.retry_after ? data.parameters.retry_after * 1000 : undefined,
+            data.error_code ?? response.status,
           );
         }
         return data.result;

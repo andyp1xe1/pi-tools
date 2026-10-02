@@ -86,19 +86,3 @@ export function getMessageText(message: AgentMessage): string {
 export function isTelegramUserMessage(message: AgentMessage): boolean {
   return (message as unknown as { role?: string }).role === "user" && isTelegramPrompt(getMessageText(message));
 }
-
-export function extractAssistantText(messages: AgentMessage[]): {
-  text?: string;
-  stopReason?: string;
-  errorMessage?: string;
-} {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index] as unknown as Record<string, unknown>;
-    if (message.role !== "assistant") continue;
-    const stopReason = typeof message.stopReason === "string" ? message.stopReason : undefined;
-    const errorMessage = typeof message.errorMessage === "string" ? message.errorMessage : undefined;
-    const text = getMessageText(message as unknown as AgentMessage);
-    return { text: text || undefined, stopReason, errorMessage };
-  }
-  return {};
-}

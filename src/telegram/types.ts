@@ -4,6 +4,7 @@ export interface TelegramApiResponse<T> {
   ok: boolean;
   result?: T;
   description?: string;
+  error_code?: number;
   parameters?: { retry_after?: number };
 }
 
@@ -146,7 +147,10 @@ export interface PendingTelegramTurn {
   content: Array<TextContent | ImageContent>;
 }
 
-export type ActiveTelegramTurn = PendingTelegramTurn;
+export interface ActiveTelegramTurn {
+  chatId: number;
+  replyToMessageId: number;
+}
 
 export interface TelegramMediaGroupState {
   messages: TelegramMessage[];

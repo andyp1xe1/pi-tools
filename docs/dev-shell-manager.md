@@ -47,4 +47,5 @@ From the tool's `promptGuidelines`:
 
 ## Source
 
-- `extensions/dev-shell-manager.ts`
+- `extensions/dev-shell-manager.ts` — entrypoint.
+- `src/dev-shell-manager/index.ts` — registration and implementation.

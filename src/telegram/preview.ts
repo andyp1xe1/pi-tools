@@ -1,115 +1,98 @@
 import type { TelegramClient } from "./client.ts";
-import { MAX_MESSAGE_LENGTH, PREVIEW_THROTTLE_MS, TELEGRAM_DRAFT_ID_MAX } from "./constants.ts";
+import { PREVIEW_THROTTLE_MS } from "./constants.ts";
+import { chunkParagraphs } from "./messages.ts";
 import type { TelegramSentMessage } from "./types.ts";
 
 interface PreviewState {
-  mode: "draft" | "message";
-  draftId?: number;
-  messageId?: number;
+  messages: Array<{ id: number; text: string }>;
   pendingText: string;
   lastSentText: string;
   flushTimer?: ReturnType<typeof setTimeout>;
+  scheduled: boolean;
+  closed: boolean;
 }
 
+/** One assistant message, streamed into stable Telegram bubbles. No ephemeral drafts. */
 export class TelegramPreview {
   private state?: PreviewState;
-  private draftSupport: "unknown" | "supported" | "unsupported" = "unknown";
-  private nextDraftId = 0;
+  private operations: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly client: TelegramClient) {}
 
   start(): void {
-    this.state = {
-      mode: this.draftSupport === "unsupported" ? "message" : "draft",
-      pendingText: "",
-      lastSentText: "",
-    };
+    if (this.state) this.close(this.state);
+    this.state = { messages: [], pendingText: "", lastSentText: "", scheduled: false, closed: false };
   }
 
   update(text: string): void {
-    if (!this.state) this.start();
     if (this.state) this.state.pendingText = text;
   }
 
-  hasContent(): boolean {
-    return Boolean(this.state && (this.state.pendingText.trim() || this.state.lastSentText.trim()));
-  }
-
   schedule(chatId: number, onError: (error: unknown) => void): void {
-    if (!this.state || this.state.flushTimer) return;
-    this.state.flushTimer = setTimeout(() => {
-      void this.flush(chatId).catch(onError);
+    const state = this.state;
+    if (!state || state.closed || state.scheduled) return;
+    state.scheduled = true;
+    state.flushTimer = setTimeout(() => {
+      state.flushTimer = undefined;
+      void this.enqueue(async () => {
+        if (!state.closed) await this.flush(chatId, state);
+      }).then(
+        () => {
+          state.scheduled = false;
+          if (!state.closed && state.pendingText.trim() !== state.lastSentText) this.schedule(chatId, onError);
+        },
+        (error) => {
+          state.scheduled = false;
+          onError(error);
+        },
+      );
     }, PREVIEW_THROTTLE_MS);
   }
 
-  async clear(chatId: number): Promise<void> {
-    const state = this.state;
-    if (!state) return;
+  // Sends and edits must complete in order, including across assistant messages.
+  // Closing a state cancels queued previews, but waits for an in-flight send.
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.operations.then(operation);
+    this.operations = result.catch(() => undefined);
+    return result;
+  }
+
+  private close(state: PreviewState): void {
+    state.closed = true;
     if (state.flushTimer) clearTimeout(state.flushTimer);
-    this.state = undefined;
-    if (state.mode === "draft" && state.draftId !== undefined) {
-      try {
-        await this.client.call("sendMessageDraft", { chat_id: chatId, draft_id: state.draftId, text: "" });
-      } catch {
-        // Draft cleanup is best-effort.
-      }
-    }
+    if (this.state === state) this.state = undefined;
   }
 
-  async finalize(chatId: number): Promise<boolean> {
+  finalize(chatId: number): Promise<void> {
     const state = this.state;
-    if (!state) return false;
-    await this.flush(chatId);
-    const finalText = (state.pendingText.trim() || state.lastSentText).trim();
-    if (!finalText) {
-      await this.clear(chatId);
-      return false;
-    }
-    if (state.mode === "draft") {
-      await this.client.call<TelegramSentMessage>("sendMessage", { chat_id: chatId, text: finalText });
-      await this.clear(chatId);
-      return true;
-    }
-    this.state = undefined;
-    return state.messageId !== undefined;
+    if (!state) return this.waitForIdle();
+    this.close(state);
+    return this.enqueue(() => this.flush(chatId, state));
   }
 
-  private allocateDraftId(): number {
-    this.nextDraftId = this.nextDraftId >= TELEGRAM_DRAFT_ID_MAX ? 1 : this.nextDraftId + 1;
-    return this.nextDraftId;
+  waitForIdle(): Promise<void> {
+    return this.operations.then(() => undefined);
   }
 
-  private async flush(chatId: number): Promise<void> {
-    const state = this.state;
-    if (!state) return;
-    state.flushTimer = undefined;
+  stop(): Promise<void> {
+    if (this.state) this.close(this.state);
+    return this.waitForIdle();
+  }
+
+  private async flush(chatId: number, state: PreviewState): Promise<void> {
     const text = state.pendingText.trim();
     if (!text || text === state.lastSentText) return;
-    const truncated = text.length > MAX_MESSAGE_LENGTH ? text.slice(0, MAX_MESSAGE_LENGTH) : text;
-
-    if (this.draftSupport !== "unsupported") {
-      const draftId = state.draftId ?? this.allocateDraftId();
-      state.draftId = draftId;
-      try {
-        await this.client.call("sendMessageDraft", { chat_id: chatId, draft_id: draftId, text: truncated });
-        this.draftSupport = "supported";
-        state.mode = "draft";
-        state.lastSentText = truncated;
-        return;
-      } catch {
-        this.draftSupport = "unsupported";
+    const chunks = chunkParagraphs(text);
+    for (const [index, chunk] of chunks.entries()) {
+      const existing = state.messages[index];
+      if (!existing) {
+        const sent = await this.client.call<TelegramSentMessage>("sendMessage", { chat_id: chatId, text: chunk });
+        state.messages.push({ id: sent.message_id, text: chunk });
+      } else if (chunk !== existing.text) {
+        await this.client.call("editMessageText", { chat_id: chatId, message_id: existing.id, text: chunk });
+        existing.text = chunk;
       }
     }
-
-    if (state.messageId === undefined) {
-      const sent = await this.client.call<TelegramSentMessage>("sendMessage", { chat_id: chatId, text: truncated });
-      state.messageId = sent.message_id;
-      state.mode = "message";
-      state.lastSentText = truncated;
-      return;
-    }
-    await this.client.call("editMessageText", { chat_id: chatId, message_id: state.messageId, text: truncated });
-    state.mode = "message";
-    state.lastSentText = truncated;
+    state.lastSentText = text;
   }
 }

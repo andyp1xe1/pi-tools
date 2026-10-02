@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
 import { orgAgenda } from "./agenda/controller.ts";
 
-export default function (pi: ExtensionAPI) {
+export function registerPiPkm(pi: ExtensionAPI) {
   pi.registerCommand("org-agenda", {
     description: "Cycle Org agenda: passive view → pane → close",
     handler: async (_args, ctx) => {

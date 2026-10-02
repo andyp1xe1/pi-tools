@@ -5,23 +5,24 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { isAbortError, type TelegramCallOptions, TelegramClient, waitBeforeRetry } from "./client.ts";
+import {
+  isAbortError,
+  isPollingConflict,
+  type TelegramCallOptions,
+  TelegramClient,
+  waitBeforeRetry,
+} from "./client.ts";
 import { handleTelegramCommand, TELEGRAM_BOT_COMMANDS } from "./commands.ts";
 import { readTelegramConfig, writeTelegramConfig } from "./config.ts";
-import { MAX_MESSAGE_LENGTH, SYSTEM_PROMPT_SUFFIX, TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS, TEMP_DIR } from "./constants.ts";
-import {
-  extractAssistantText,
-  getMessageText,
-  isAssistantMessage,
-  isTelegramPrompt,
-  isTelegramUserMessage,
-} from "./messages.ts";
+import { TelegramConnection } from "./connection.ts";
+import { SYSTEM_PROMPT_SUFFIX, TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS, TEMP_DIR } from "./constants.ts";
+import { TelegramInbox } from "./inbox.ts";
+import { getMessageText, isAssistantMessage, isTelegramPrompt } from "./messages.ts";
 import { TelegramPickers } from "./pickers.ts";
 import { TelegramPreview } from "./preview.ts";
 import { createTelegramTurn } from "./turn.ts";
 import type {
   ActiveTelegramTurn,
-  PendingTelegramTurn,
   TelegramApiResponse,
   TelegramAttachment,
   TelegramConfig,
@@ -35,23 +36,36 @@ export class TelegramBridge {
   private config: TelegramConfig = {};
   private pollingController?: AbortController;
   private pollingPromise?: Promise<void>;
-  private queuedTurns: PendingTelegramTurn[] = [];
-  private deferredTurns: Array<{ turn: PendingTelegramTurn; ctx: ExtensionContext }> = [];
+  private connectingPromise?: Promise<void>;
   private activeTurn?: ActiveTelegramTurn;
   private typingInterval?: ReturnType<typeof setInterval>;
-  private currentAbort?: () => void;
-  private latestAgentMessages: AgentMessage[] = [];
+  private agentRunning = false;
+  private lastAssistantError?: string;
   private setupInProgress = false;
   private compacting = false;
   private readonly mediaGroups = new Map<string, TelegramMediaGroupState>();
   private readonly client: TelegramClient;
   private readonly pickers: TelegramPickers;
   private readonly preview: TelegramPreview;
+  private readonly inbox: TelegramInbox;
 
   constructor(private readonly pi: ExtensionAPI) {
     this.client = new TelegramClient(() => this.config);
     this.pickers = new TelegramPickers(pi, this.client);
     this.preview = new TelegramPreview(this.client);
+    this.inbox = new TelegramInbox({
+      ready: (ctx) => !this.compacting && (this.agentRunning || ctx.isIdle()),
+      submit: (turn) => this.pi.sendUserMessage(turn.content, { deliverAs: "steer" }),
+      changed: (ctx) => this.updateStatus(ctx),
+      failed: (turn, ctx, error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.runTask(
+          ctx,
+          "message delivery failed",
+          this.sendText(turn.chatId, turn.replyToMessageId, `Could not deliver this message to pi: ${message}`),
+        );
+      },
+    });
   }
 
   register(): void {
@@ -87,7 +101,7 @@ export class TelegramBridge {
       ctx.ui.setStatus("telegram", `${label} ${theme.fg("warning", "awaiting pairing")}`);
       return;
     }
-    const incomingCount = this.queuedTurns.length + this.deferredTurns.length;
+    const incomingCount = this.inbox.count;
     if (this.activeTurn) {
       const incoming = incomingCount ? theme.fg("muted", ` · ${incomingCount} incoming`) : "";
       ctx.ui.setStatus("telegram", `${label} ${theme.fg("accent", "replying")}${incoming}`);
@@ -139,6 +153,10 @@ export class TelegramBridge {
 
   private async promptForConfig(ctx: ExtensionContext): Promise<void> {
     if (!ctx.hasUI || this.setupInProgress) return;
+    if (this.pollingPromise || this.connectingPromise) {
+      ctx.ui.notify("Disconnect Telegram before changing its configuration.", "warning");
+      return;
+    }
     this.setupInProgress = true;
     try {
       const token = await ctx.ui.input("Telegram bot token", "123456:ABCDEF...");
@@ -154,11 +172,9 @@ export class TelegramBridge {
 
       nextConfig.botId = data.result.id;
       nextConfig.botUsername = data.result.username;
-      this.config = nextConfig;
-      await writeTelegramConfig(this.config);
+      await this.startPolling(ctx, nextConfig, true);
       ctx.ui.notify(`Telegram bot connected: @${this.config.botUsername ?? "unknown"}`, "info");
       ctx.ui.notify("Send /start to your bot in Telegram to pair this extension with your account.", "info");
-      await this.startPolling(ctx);
     } finally {
       this.setupInProgress = false;
       this.updateStatus(ctx);
@@ -166,6 +182,8 @@ export class TelegramBridge {
   }
 
   private async stopPolling(): Promise<void> {
+    this.pollingController?.abort();
+    await this.connectingPromise?.catch(() => undefined);
     this.stopTypingLoop();
     this.pollingController?.abort();
     this.pollingController = undefined;
@@ -182,7 +200,7 @@ export class TelegramBridge {
       message: firstMessage,
       text: rawText,
       ctx,
-      abortCurrent: this.currentAbort,
+      abortCurrent: this.agentRunning ? () => ctx.abort() : undefined,
       isPaired: this.config.allowedUserId !== undefined,
       pair: async (userId) => {
         this.config.allowedUserId = userId;
@@ -199,35 +217,11 @@ export class TelegramBridge {
     if (handled) return;
 
     const turn = await createTelegramTurn(this.pi, this.client, messages);
-    if (this.compacting) {
-      this.deferredTurns.push({ turn, ctx });
-      this.updateStatus(ctx);
-      return;
-    }
-    await this.deliverTurn(turn, ctx);
+    this.inbox.enqueue(turn, ctx);
   }
 
   private startNewSession(): void {
     this.pi.sendUserMessage("/telegram-new", { expandPromptTemplates: true });
-  }
-
-  private async deliverTurn(turn: PendingTelegramTurn, ctx: ExtensionContext): Promise<void> {
-    this.queuedTurns.push(turn);
-    this.updateStatus(ctx);
-    try {
-      this.pi.sendUserMessage(turn.content, { deliverAs: "steer" });
-    } catch (error) {
-      const queuedIndex = this.queuedTurns.indexOf(turn);
-      if (queuedIndex >= 0) this.queuedTurns.splice(queuedIndex, 1);
-      this.updateStatus(ctx);
-      const message = error instanceof Error ? error.message : String(error);
-      await this.sendText(turn.chatId, turn.replyToMessageId, `Could not deliver this message to pi: ${message}`);
-    }
-  }
-
-  private async flushDeferredTurns(): Promise<void> {
-    const deferred = this.deferredTurns.splice(0);
-    for (const { turn, ctx } of deferred) await this.deliverTurn(turn, ctx);
   }
 
   private async handleAuthorizedMessage(message: TelegramMessage, ctx: ExtensionContext): Promise<void> {
@@ -289,23 +283,6 @@ export class TelegramBridge {
       // The bridge can still poll if webhook cleanup was unnecessary or transiently failed.
     }
 
-    if (this.config.lastUpdateId === undefined) {
-      try {
-        const updates = await this.callTelegram<TelegramUpdate[]>(
-          "getUpdates",
-          { offset: -1, limit: 1, timeout: 0 },
-          { signal },
-        );
-        const last = updates.at(-1);
-        if (last) {
-          this.config.lastUpdateId = last.update_id;
-          await writeTelegramConfig(this.config);
-        }
-      } catch {
-        // Continue into the reconnecting poll loop.
-      }
-    }
-
     while (!signal.aborted) {
       try {
         const updates = await this.callTelegram<TelegramUpdate[]>(
@@ -325,6 +302,14 @@ export class TelegramBridge {
         }
       } catch (error) {
         if (signal.aborted || isAbortError(error)) return;
+        if (isPollingConflict(error)) {
+          this.reportError(ctx, "polling stopped", error);
+          ctx.ui.notify(
+            "Telegram polling conflict: another client is using this bot. This bridge has disconnected.",
+            "error",
+          );
+          return;
+        }
         this.updateStatus(ctx, "reconnecting");
         try {
           await waitBeforeRetry(1000, signal);
@@ -336,25 +321,55 @@ export class TelegramBridge {
     }
   }
 
-  private async startPolling(ctx: ExtensionContext): Promise<void> {
-    if (!this.config.botToken || this.pollingPromise) return;
+  private async startPolling(ctx: ExtensionContext, config = this.config, saveConfig = false): Promise<void> {
+    if (!config.botToken || this.pollingPromise) return;
+    if (this.connectingPromise) return this.connectingPromise;
     const controller = new AbortController();
     this.pollingController = controller;
+    this.connectingPromise = this.connect(ctx, config, saveConfig, controller);
     try {
+      await this.connectingPromise;
+    } catch (error) {
+      this.reportError(ctx, "connect failed", error);
+      ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      throw error;
+    } finally {
+      this.connectingPromise = undefined;
+      if (!this.pollingPromise && this.pollingController === controller) this.pollingController = undefined;
+    }
+  }
+
+  private async connect(
+    ctx: ExtensionContext,
+    config: TelegramConfig,
+    saveConfig: boolean,
+    controller: AbortController,
+  ): Promise<void> {
+    const connection = await TelegramConnection.acquire(config.botToken as string);
+    try {
+      controller.signal.throwIfAborted();
+      this.config = config;
+      if (saveConfig) await writeTelegramConfig(config);
       await this.client.registerCommands(TELEGRAM_BOT_COMMANDS, controller.signal);
+      controller.signal.throwIfAborted();
     } catch (error) {
       controller.abort();
-      this.pollingController = undefined;
-      throw new Error(
-        `Failed to register Telegram commands: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      await connection.release();
+      throw error;
     }
-
-    this.pollingPromise = this.pollLoop(ctx, controller.signal).finally(() => {
+    this.pollingPromise = this.pollLoop(ctx, controller.signal).finally(async () => {
+      this.stopTypingLoop();
+      this.inbox.pause();
+      // Finish in-flight edits before relinquishing ownership. Later pi events
+      // must not keep publishing into a chat now owned by another session.
+      this.activeTurn = undefined;
+      await this.preview.stop();
+      await connection.release();
       this.pollingPromise = undefined;
       this.pollingController = undefined;
       this.updateStatus(ctx);
     });
+    this.inbox.resume(ctx);
     this.updateStatus(ctx);
   }
 
@@ -419,7 +434,7 @@ export class TelegramBridge {
           `allowed user: ${this.config.allowedUserId ?? "not paired"}`,
           `polling: ${this.pollingPromise ? "running" : "stopped"}`,
           `replying to Telegram: ${this.activeTurn ? "yes" : "no"}`,
-          `incoming messages waiting for pi: ${this.queuedTurns.length + this.deferredTurns.length}`,
+          `incoming messages waiting for pi: ${this.inbox.count}`,
         ];
         ctx.ui.notify(status.join(" | "), "info");
       },
@@ -427,9 +442,10 @@ export class TelegramBridge {
     this.pi.registerCommand("telegram-connect", {
       description: "Start the Telegram bridge in this pi session",
       handler: async (args, ctx) => {
-        this.config = await readTelegramConfig();
-        if (!this.config.botToken) return this.promptForConfig(ctx);
-        await this.startPolling(ctx);
+        if (this.pollingPromise || this.connectingPromise) return;
+        const config = await readTelegramConfig();
+        if (!config.botToken) return this.promptForConfig(ctx);
+        await this.startPolling(ctx, config);
         if (args.trim() === "notify" && this.config.lastChatId !== undefined) {
           await this.sendText(this.config.lastChatId, 0, "New pi thread ready. Telegram is connected.");
         }
@@ -449,14 +465,12 @@ export class TelegramBridge {
     this.pi.on("session_before_compact", async () => {
       this.compacting = true;
     });
-    this.pi.on("session_compact", async () => {
+    const afterCompaction = (_event: unknown, ctx: ExtensionContext): void => {
       this.compacting = false;
-      await this.flushDeferredTurns();
-    });
-    this.pi.on("session_compact_failed", async () => {
-      this.compacting = false;
-      await this.flushDeferredTurns();
-    });
+      this.inbox.schedule(ctx);
+    };
+    this.pi.on("session_compact", afterCompaction);
+    this.pi.on("session_compact_failed", afterCompaction);
     this.pi.on("session_shutdown", async () => this.onSessionShutdown());
     this.pi.on("before_agent_start", async (event) => ({
       systemPrompt:
@@ -466,23 +480,19 @@ export class TelegramBridge {
           : SYSTEM_PROMPT_SUFFIX),
     }));
     this.pi.on("agent_start", async (_event, ctx) => {
-      if (this.compacting) {
-        this.compacting = false;
-        await this.flushDeferredTurns();
-      }
-      this.currentAbort = () => ctx.abort();
+      this.agentRunning = true;
+      this.inbox.schedule(ctx);
       this.updateStatus(ctx);
     });
     this.pi.on("message_start", async (event, ctx) => this.onMessageStart(event.message, ctx));
     this.pi.on("message_update", async (event, ctx) => this.onMessageUpdate(event.message, ctx));
-    this.pi.on("agent_end", async (event) => {
-      this.latestAgentMessages = event.messages;
-    });
+    this.pi.on("message_end", async (event, ctx) => this.onMessageEnd(event.message, ctx));
     this.pi.on("agent_settled", async (_event, ctx) => this.onAgentSettled(ctx));
   }
 
   private async onSessionStart(ctx: ExtensionContext): Promise<void> {
     this.compacting = false;
+    this.inbox.pause();
     this.config = await readTelegramConfig();
     await mkdir(TEMP_DIR, { recursive: true });
     this.updateStatus(ctx);
@@ -490,40 +500,28 @@ export class TelegramBridge {
 
   private async onSessionShutdown(): Promise<void> {
     this.compacting = false;
-    this.queuedTurns = [];
-    this.deferredTurns = [];
+    this.agentRunning = false;
     this.pickers.clear();
     for (const state of this.mediaGroups.values()) if (state.flushTimer) clearTimeout(state.flushTimer);
     this.mediaGroups.clear();
-    if (this.activeTurn) await this.preview.clear(this.activeTurn.chatId);
-    this.activeTurn = undefined;
-    this.currentAbort = undefined;
     await this.stopPolling();
+    this.inbox.stop();
+    await this.preview.stop();
+    this.activeTurn = undefined;
   }
 
   private async onMessageStart(message: AgentMessage, ctx: ExtensionContext): Promise<void> {
-    if (isTelegramUserMessage(message)) {
-      const nextTurn = this.queuedTurns.shift();
-      if (!nextTurn) return;
-      if (this.activeTurn) {
-        this.activeTurn.replyToMessageId = nextTurn.replyToMessageId;
-      } else {
-        this.activeTurn = { ...nextTurn };
-        this.preview.start();
-      }
+    const nextTurn = this.inbox.take(message, ctx);
+    if (nextTurn) {
+      if (this.inbox.isPaused) return;
+      this.activeTurn = { chatId: nextTurn.chatId, replyToMessageId: nextTurn.replyToMessageId };
+      this.lastAssistantError = undefined;
       this.startTypingLoop(nextTurn.chatId);
       this.updateStatus(ctx);
       return;
     }
-
     if (!this.activeTurn || !isAssistantMessage(message)) return;
-    if (this.preview.hasContent()) {
-      try {
-        await this.preview.finalize(this.activeTurn.chatId);
-      } catch (error) {
-        this.reportError(ctx, "preview failed", error);
-      }
-    }
+    this.lastAssistantError = undefined;
     this.preview.start();
   }
 
@@ -533,40 +531,29 @@ export class TelegramBridge {
     this.preview.schedule(this.activeTurn.chatId, (error) => this.reportError(ctx, "preview failed", error));
   }
 
+  private onMessageEnd(message: AgentMessage, ctx: ExtensionContext): void {
+    if (!this.activeTurn || !isAssistantMessage(message)) return;
+    const assistant = message as { stopReason?: string; errorMessage?: string };
+    this.lastAssistantError =
+      assistant.stopReason === "error"
+        ? assistant.errorMessage || "Telegram bridge: pi failed while processing the request."
+        : undefined;
+    this.preview.update(getMessageText(message));
+    this.runTask(ctx, "reply failed", this.preview.finalize(this.activeTurn.chatId));
+  }
+
   private async onAgentSettled(ctx: ExtensionContext): Promise<void> {
     const turn = this.activeTurn;
-    this.currentAbort = undefined;
+    const error = this.lastAssistantError;
+    this.agentRunning = false;
     this.stopTypingLoop();
     this.activeTurn = undefined;
+    this.lastAssistantError = undefined;
     this.updateStatus(ctx);
-    if (!turn) return;
-
-    try {
-      const assistant = extractAssistantText(this.latestAgentMessages);
-      if (assistant.stopReason === "aborted") {
-        await this.preview.clear(turn.chatId);
-        return;
-      }
-      if (assistant.stopReason === "error") {
-        await this.preview.clear(turn.chatId);
-        await this.sendText(
-          turn.chatId,
-          turn.replyToMessageId,
-          assistant.errorMessage || "Telegram bridge: pi failed while processing the request.",
-        );
-        return;
-      }
-
-      const finalText = assistant.text;
-      if (finalText) this.preview.update(finalText);
-      if (finalText && finalText.length <= MAX_MESSAGE_LENGTH) {
-        await this.preview.finalize(turn.chatId);
-      } else {
-        await this.preview.clear(turn.chatId);
-        if (finalText) await this.sendText(turn.chatId, turn.replyToMessageId, finalText);
-      }
-    } catch (error) {
-      this.reportError(ctx, "reply failed", error);
+    await this.preview.waitForIdle();
+    if (turn && error && !this.inbox.isPaused) {
+      this.runTask(ctx, "reply failed", this.sendText(turn.chatId, turn.replyToMessageId, error));
     }
+    this.inbox.schedule(ctx);
   }
 }

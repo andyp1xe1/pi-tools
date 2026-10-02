@@ -67,7 +67,11 @@ npm install
 npm run check
 npm run fix
 npm run test:browser-check
+npm run test:telegram
+npm run test:extensions
 ```
+
+Every extension is a thin `extensions/<name>.ts` entrypoint calling a named registration function in `src/<name>/index.ts`. Implementations and reusable helpers live under `src/`. See [Code boundaries and Telegram lifecycle](docs/architecture.md).
 
 Run either extension without a session or network access:
 
