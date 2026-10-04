@@ -54,9 +54,9 @@ in {
       type = lib.types.listOf lib.types.str;
       default = [
         "npm:pi-web-access@0.30.0"
-        "npm:@router-for-me/pi-cliproxyapi-provider@1.4.21"
+        "${self.packages.${pkgs.stdenv.hostPlatform.system}.cliproxyapi-provider}"
       ];
-      description = "Default recommended pi package entries. Set to [] to disable the bundled recommendations.";
+      description = "Default recommended pi package entries. Set to [] to disable them.";
     };
 
     telegram = lib.mkOption {

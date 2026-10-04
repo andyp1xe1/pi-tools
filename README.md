@@ -58,7 +58,7 @@ programs.pi-tools = {
 
 With `programs.pi-tools.enable = true`, the module adds the Nix-built `browser-check` executable to `PATH` through `home.packages`. Set `programs.pi-tools.browserCheck.enable = false;` to omit the CLI, its skill, and Playwright from the default Nix package. Set `programs.pi-tools.browserCheck.package` to use a different CLI build. The module also writes pi settings and installs `piCliPackage` if supplied. The `telegram` and `audioTranscription` options are off unless enabled.
 
-The default pi theme is `gruvbox-dark`. The module also recommends `pi-web-access` and `@router-for-me/pi-cliproxyapi-provider`. Set `theme = null;` or `recommendedPackages = [];` to omit either default. Use `extraPackages` and `settings` for other pi settings.
+The default pi theme is `gruvbox-dark`. The module also includes `pi-web-access` and the [CLIProxyAPI provider fork](https://github.com/andyp1xe1/pi-cliproxyapi-provider). Set `theme = null;` or `recommendedPackages = [];` to omit these defaults. Use `extraPackages` and `settings` for other pi settings.
 
 See the [CLIProxyAPI setup docs](https://help.router-for.me/agent-client/pi.html).
 

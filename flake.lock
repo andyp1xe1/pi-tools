@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "cliproxyapi-provider-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791131557,
+        "narHash": "sha256-FaGUpOEVq2OKl+XTyP5YQx9gpAO1BuQrB0exc+qpgS8=",
+        "owner": "andyp1xe1",
+        "repo": "pi-cliproxyapi-provider",
+        "rev": "c3928c6f1e9d357515b08e3737b72b64051164fd",
+        "type": "github"
+      },
+      "original": {
+        "owner": "andyp1xe1",
+        "repo": "pi-cliproxyapi-provider",
+        "rev": "c3928c6f1e9d357515b08e3737b72b64051164fd",
+        "type": "github"
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -73,6 +90,7 @@
     },
     "root": {
       "inputs": {
+        "cliproxyapi-provider-src": "cliproxyapi-provider-src",
         "herdr-nix": "herdr-nix",
         "herdr-src": "herdr-src",
         "nixpkgs": "nixpkgs"
