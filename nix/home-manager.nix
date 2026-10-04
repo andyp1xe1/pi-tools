@@ -54,6 +54,7 @@ in {
       type = lib.types.listOf lib.types.str;
       default = [
         "npm:pi-web-access@0.30.0"
+        "npm:@router-for-me/pi-cliproxyapi-provider@1.4.21"
       ];
       description = "Default recommended pi package entries. Set to [] to disable the bundled recommendations.";
     };
