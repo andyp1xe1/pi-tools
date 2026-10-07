@@ -54,8 +54,8 @@
           && base != "build"
           && base != "coverage";
       };
-      mkPiTools = withBrowserCheck: pkgs.stdenvNoCC.mkDerivation {
-        pname = if withBrowserCheck then "pi-tools" else "pi-tools-without-browser-check";
+      mkPiTools = withBrowserCli: pkgs.stdenvNoCC.mkDerivation {
+        pname = if withBrowserCli then "pi-tools" else "pi-tools-without-browser-cli";
         version = "0.0.1";
         src = source;
 
@@ -65,29 +65,29 @@
           runHook preInstall
           mkdir -p "$out"
           cp -R . "$out/"
-          ${pkgs.lib.optionalString withBrowserCheck ''
-            ln -s ${self.packages.${pkgs.stdenv.hostPlatform.system}.browser-check}/lib/node_modules/pi-tools/node_modules "$out/node_modules"
+          ${pkgs.lib.optionalString withBrowserCli ''
+            ln -s ${self.packages.${pkgs.stdenv.hostPlatform.system}.browser-cli}/lib/node_modules/pi-tools/node_modules "$out/node_modules"
           ''}
-          ${pkgs.lib.optionalString (!withBrowserCheck) ''
-            rm -r "$out/skills/browser-check" "$out/src/browser-check" "$out/tests/browser-check"
-            rm "$out/bin/browser-check.mjs"
+          ${pkgs.lib.optionalString (!withBrowserCli) ''
+            rm -r "$out/skills/browser-cli" "$out/src/browser-cli" "$out/tests/browser-cli"
+            rm "$out/bin/browser-cli.mjs"
           ''}
           runHook postInstall
         '';
       };
     in rec {
-      browser-check = pkgs.buildNpmPackage {
-        pname = "pi-tools-browser-check";
+      browser-cli = pkgs.buildNpmPackage {
+        pname = "pi-tools-browser-cli";
         version = "0.0.1";
         src = source;
-        npmDepsHash = "sha256-ztWdXt+/3d6zd/FhgRYIdAuGjCbqUfTaY6CObFIm1xs=";
+        npmDepsHash = "sha256-qBadhlYW2+8lliDlbeDT+y3zIQJFxqsS2XEcKxKTNUo=";
         npmFlags = ["--omit=dev"];
         dontNpmBuild = true;
         nativeBuildInputs = [pkgs.makeWrapper];
         postInstall = ''
-          wrapProgram "$out/bin/browser-check" \
+          wrapProgram "$out/bin/browser-cli" \
             --set-default FFMPEG_PATH ${pkgs.ffmpeg}/bin/ffmpeg \
-            --set BROWSER_CHECK_REVISION ${self.rev or (self.dirtyRev or "unknown")}
+            --set BROWSER_CLI_REVISION ${self.rev or (self.dirtyRev or "unknown")}
         '';
       };
 
@@ -101,12 +101,18 @@
       '';
 
       default = mkPiTools true;
-      without-browser-check = mkPiTools false;
+      without-browser-cli = mkPiTools false;
 
       pi-tools = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
     });
 
     checks = forAllSystems (pkgs: {
+      browser-cli-home-manager =
+        assert import ./nix/browser-cli-test.nix {inherit self pkgs;};
+        pkgs.runCommand "check-browser-cli-home-manager" {} ''
+          touch "$out"
+        '';
+
       cliproxyapi-transport = pkgs.runCommand "check-cliproxyapi-transport" {
         nativeBuildInputs = [pkgs.nodejs_22];
       } ''

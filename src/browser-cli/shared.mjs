@@ -32,10 +32,10 @@ export function integer(value, fallback, min, max, label) {
   return n;
 }
 export function paths(env = process.env) {
-  const home = resolve(env.BROWSER_CHECK_HOME || join(env.XDG_DATA_HOME || join(homedir(), '.local/share'), 'browser-check'));
+  const home = resolve(env.BROWSER_CLI_HOME || env.BROWSER_CHECK_HOME || join(env.XDG_DATA_HOME || join(homedir(), '.local/share'), 'browser-cli'));
   const hash = createHash('sha256').update(home).digest('hex').slice(0, 12);
   // Keep Unix socket paths short. The directory is private to this OS user and data home.
-  const runtime = join(tmpdir(), `browser-check-${process.getuid?.() ?? 'user'}-${hash}`);
+  const runtime = join(tmpdir(), `browser-cli-${process.getuid?.() ?? 'user'}-${hash}`);
   return { home, runtime, profiles: join(home, 'profiles'), artifacts: join(home, 'artifacts') };
 }
 export async function privateDir(path) {

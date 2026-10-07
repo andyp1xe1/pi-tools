@@ -20,9 +20,9 @@
 | `latex-renderer`      | Renders block LaTeX as images in pi.                                   | [LaTeX renderer](docs/latex-renderer.md)             |
 | `pi-pkm`              | Displays tasks from the builtin, todo.txt, and Emacs agenda providers. | [Pi PKM](docs/pi-pkm.md)                             |
 | `telegram`            | Connects a Telegram chat to a pi session.                              | [Telegram bridge](docs/telegram.md)                  |
-| `browser-check`       | Measures pages and interacts with Chrome through a local CLI.          | [Browser check](docs/browser-check.md)               |
+| `browser-cli`         | Measures pages and interacts with Chrome through a local CLI.          | [Browser CLI](docs/browser-cli.md)                   |
 
-The `nixos-dev-shells`, `btca-local`, `linear-cli`, and [`browser-check`](skills/browser-check/SKILL.md) skills live in `skills/`.
+The `nixos-dev-shells`, `btca-local`, `linear-cli`, and [`browser-cli`](skills/browser-cli/SKILL.md) skills live in `skills/`.
 
 ## Install
 
@@ -36,10 +36,10 @@ Pi discovers the extensions and skills. For a source checkout, install dependenc
 
 ```sh
 npm ci
-node bin/browser-check.mjs help
+node bin/browser-cli.mjs help
 ```
 
-Pi installs the root Playwright dependency when it installs pi-tools from git. The [browser-check skill](skills/browser-check/SKILL.md) covers Chrome, FFmpeg for MP4 recording, and CLI setup. Run `npm link` to put the source-checkout CLI on `PATH`.
+Pi installs the root Playwright dependency when it installs pi-tools from git. The [browser-cli skill](skills/browser-cli/SKILL.md) covers Chrome, FFmpeg for MP4 recording, and CLI setup. Run `npm link` to put the source-checkout CLI on `PATH`.
 
 ### Home Manager
 
@@ -56,7 +56,13 @@ programs.pi-tools = {
 };
 ```
 
-With `programs.pi-tools.enable = true`, the module adds the Nix-built `browser-check` executable to `PATH` through `home.packages`. Set `programs.pi-tools.browserCheck.enable = false;` to omit the CLI, its skill, and Playwright from the default Nix package. Set `programs.pi-tools.browserCheck.package` to use a different CLI build. The module also writes pi settings and installs `piCliPackage` if supplied. The `telegram` and `audioTranscription` options are off unless enabled.
+With `programs.pi-tools.enable = true`, the module adds the Nix-built `browser-cli` executable to `PATH` through `home.packages`.
+
+Set `programs.pi-tools.browserCli.enable = false;` to omit the CLI, its skill, and Playwright. This selects `packages.<system>.without-browser-cli`. Set `programs.pi-tools.browserCli.package` to use a different CLI build. The default is `packages.<system>.browser-cli`. The old `browserCheck` option still works and warns to use `browserCli`.
+
+The module also writes pi settings and installs `piCliPackage` if supplied. The `telegram` and `audioTranscription` options are off unless enabled.
+
+The CLI now defaults to `$XDG_DATA_HOME/browser-cli` or `~/.local/share/browser-cli`. It does not migrate existing data. See [rename and data compatibility](docs/browser-cli.md#rename-and-data-compatibility) before reusing old profiles. Activate the updated Home Manager generation to put the renamed executable on `PATH`. For a source checkout, rerun `npm link`. Reload Pi to discover the renamed skill.
 
 The default pi theme is `gruvbox-dark`. The module also includes `pi-web-access` and the [CLIProxyAPI provider fork](https://github.com/andyp1xe1/pi-cliproxyapi-provider). Set `theme = null;` or `recommendedPackages = [];` to omit these defaults. Use `extraPackages` and `settings` for other pi settings.
 
@@ -70,7 +76,7 @@ The module also installs Herdr with Gruvbox, upstream agent integrations, and a 
 npm install
 npm run check
 npm run fix
-npm run test:browser-check
+npm run test:browser-cli
 npm run test:telegram
 npm run test:extensions
 ```

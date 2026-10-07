@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { chromium } from 'playwright';
-import { chromePath, paths, sleep } from '../../src/browser-check/shared.mjs';
+import { chromePath, paths, sleep } from '../../src/browser-cli/shared.mjs';
 
 const exec = promisify(execFile);
-const cli = fileURLToPath(new URL('../../bin/browser-check.mjs', import.meta.url));
+const cli = fileURLToPath(new URL('../../bin/browser-cli.mjs', import.meta.url));
 const fixture = `<!doctype html><html><head><style>
 body { margin: 0; font-family: sans-serif }
 #row { display:flex; gap:16px; padding:12px }
@@ -35,8 +35,8 @@ if(location.pathname==='/login') { document.cookie='fixture_auth=yes; Max-Age=36
 </script></body></html>`;
 
 async function environment(t) {
-  const dir = await mkdtemp(join(tmpdir(), 'browser-check-test-'));
-  const env = { ...process.env, BROWSER_CHECK_HOME: join(dir, 'state') };
+  const dir = await mkdtemp(join(tmpdir(), 'browser-cli-test-'));
+  const env = { ...process.env, BROWSER_CLI_HOME: join(dir, 'state') };
   const http = createServer((req, res) => {
     res.setHeader('Content-Type', 'text/html');
     if (req.url === '/slow') {
@@ -81,14 +81,36 @@ async function environment(t) {
 // These launch only isolated local fixture browsers, never personal profiles or live apps.
 test('version reports revision and checks FFmpeg without creating session directories', { timeout: 30_000 }, async (t) => {
   const { env, call } = await environment(t);
-  const version = await call(['version'], { extraEnv: { BROWSER_CHECK_REVISION: 'test-revision' } });
+  const version = await call(['version'], { extraEnv: { BROWSER_CLI_REVISION: 'test-revision' } });
   assert.equal(version.revision, 'test-revision');
   assert.equal(version.ffmpeg.available, true);
   assert.equal(version.version, '0.0.1');
-  const missing = await call(['version'], { extraEnv: { FFMPEG_PATH: '/missing/browser-check-ffmpeg' } });
+  const legacy = await call(['version'], { extraEnv: { BROWSER_CLI_REVISION: '', BROWSER_CHECK_REVISION: 'legacy-revision' } });
+  assert.equal(legacy.revision, 'legacy-revision');
+  const preferred = await call(['version'], { extraEnv: { BROWSER_CLI_REVISION: 'current-revision', BROWSER_CHECK_REVISION: 'legacy-revision' } });
+  assert.equal(preferred.revision, 'current-revision');
+  const missing = await call(['version'], { extraEnv: { FFMPEG_PATH: '/missing/browser-cli-ffmpeg' } });
   assert.equal(missing.ffmpeg.available, false);
-  assert.equal(missing.ffmpeg.executable, '/missing/browser-check-ffmpeg');
-  await assert.rejects(stat(env.BROWSER_CHECK_HOME), { code: 'ENOENT' });
+  assert.equal(missing.ffmpeg.executable, '/missing/browser-cli-ffmpeg');
+  await assert.rejects(stat(env.BROWSER_CLI_HOME), { code: 'ENOENT' });
+});
+
+test('legacy data-home override preserves shared profile leases across runtime namespaces', { timeout: 30_000 }, async (t) => {
+  const { env, url, call } = await environment(t);
+  // The old binary stores its lease in the profile, not its browser-check runtime directory.
+  // Model an existing legacy worker without starting or signaling any external process.
+  const lease = join(paths(env).profiles, 'legacy', 'lease');
+  await mkdir(lease, { recursive: true, mode: 0o700 });
+  const owner = JSON.stringify({ pid: process.pid, session: 'old-session', mode: 'automation' });
+  await writeFile(join(lease, 'owner.json'), owner, { mode: 0o600 });
+  const extraEnv = { BROWSER_CLI_HOME: '', BROWSER_CHECK_HOME: env.BROWSER_CLI_HOME };
+  const profiles = await call(['profiles'], { extraEnv });
+  assert.equal(profiles.profiles[0].lease.session, 'old-session');
+  const refused = await call(['open', '--session', 'conflict', '--profile', 'legacy', url], { extraEnv });
+  assert.equal(refused.error.code, 'PROFILE_BUSY', JSON.stringify(refused));
+  assert.equal(await readFile(join(lease, 'owner.json'), 'utf8'), owner);
+  assert.equal((await call(['close', '--session', 'conflict'])).removed, true);
+  assert.equal(await readFile(join(lease, 'owner.json'), 'utf8'), owner);
 });
 
 test('MP4 recording from a new or existing session, preserving viewport and page state', { timeout: 120_000 }, async (t) => {
@@ -153,7 +175,7 @@ test('MP4 recording from a new or existing session, preserving viewport and page
 
 test('missing FFmpeg reports a clear failure without stealing the profile', { timeout: 60_000 }, async (t) => {
   const { url, call } = await environment(t);
-  const unavailable = { FFMPEG_PATH: '/missing/browser-check-ffmpeg' };
+  const unavailable = { FFMPEG_PATH: '/missing/browser-cli-ffmpeg' };
   const failed = await call(['record', '--session', 'new-failure', '--profile', 'preview', '--width', '390', '--height', '844', url], { extraEnv: unavailable });
   assert.equal(failed.error.code, 'FFMPEG_UNAVAILABLE');
   assert.equal((await call(['profiles'])).profiles.find((profile) => profile.profile === 'preview').lease, null);
@@ -265,7 +287,7 @@ test('real browser: layout, interaction, files, errors, traces, profile reuse an
 
 test('startup failures release leases and simultaneous session creation has one owner', { timeout: 120_000 }, async (t) => {
   const { url, call } = await environment(t);
-  const missing = await call(['open', '--session', 'missing', '--profile', 'retry', url], { extraEnv: { CHROME_PATH: '/nonexistent/browser-check-chrome' } });
+  const missing = await call(['open', '--session', 'missing', '--profile', 'retry', url], { extraEnv: { CHROME_PATH: '/nonexistent/browser-cli-chrome' } });
   assert.equal(missing.error.code, 'CHROME_NOT_FOUND');
   assert.equal((await call(['profiles'])).profiles.find(p => p.profile === 'retry').lease, null);
   const slow = await call(['open', '--session', 'slow', '--profile', 'retry', '--timeout', '300', `${url}/slow`]);

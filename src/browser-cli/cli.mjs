@@ -8,7 +8,7 @@ import {
   name, paths, rpc, sessionPaths, sleep, webURL,
 } from './shared.mjs';
 
-export const HELP = `browser-check — direct browser inspection (JSON output)
+export const HELP = `browser-cli. Direct browser inspection with JSON output.
 
   version                                    Show revision and FFmpeg availability
 
@@ -41,10 +41,11 @@ Inspection (all require --session NAME):
   scroll [SELECTOR] --x N --y N               Scroll by pixels; omit selector for page
   trace start | trace stop [FILE]
 
-Global: --timeout MS (100–120000; default 15000, startup 30000).
+Global: --timeout MS. Range 100 to 120000, default 15000, startup 30000.
 Locators must match exactly one element unless --all is explicitly supported.
 -- within an argument list ends option parsing. All relative file paths use your cwd.
-Environment: CHROME_PATH, BROWSER_CHECK_HOME, XDG_DATA_HOME.
+Environment: CHROME_PATH, FFMPEG_PATH, BROWSER_CLI_HOME, BROWSER_CLI_REVISION, XDG_DATA_HOME.
+Legacy BROWSER_CHECK_HOME / BROWSER_CHECK_REVISION are fallbacks; BROWSER_CLI_* wins.
 Profiles are full browser credentials. eval is trusted code, NOT read-only.
 `;
 
@@ -66,7 +67,7 @@ const BOOLEAN = new Set(['headed', 'force', 'all', 'full-page']);
 export function parse(argv) {
   const [command, ...args] = argv;
   if (!command || command === 'help' || command === '--help') return { command: 'help' };
-  if (!OPTIONS[command]) fail('INVALID_ARGUMENT', `Unknown command: ${command}. Run browser-check help.`);
+  if (!OPTIONS[command]) fail('INVALID_ARGUMENT', `Unknown command: ${command}. Run browser-cli help.`);
   const options = {}, positional = [];
   let literal = false;
   for (let i = 0; i < args.length; i++) {
@@ -92,7 +93,7 @@ export function parse(argv) {
   if (!['version', 'sessions', 'profiles'].includes(command)) name(options.session, 'Session');
   const request = { command, options, positional, timeout };
   function count(min, max = min) {
-    if (positional.length < min || positional.length > max) fail('INVALID_ARGUMENT', `Invalid arguments for ${command}. Run browser-check help.`);
+    if (positional.length < min || positional.length > max) fail('INVALID_ARGUMENT', `Invalid arguments for ${command}. Run browser-cli help.`);
   }
   if (['open', 'login'].includes(command)) {
     name(options.profile, 'Profile'); count(1); positional[0] = webURL(positional[0]);
@@ -186,8 +187,9 @@ function versionInfo() {
   const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
   const executable = process.env.FFMPEG_PATH || 'ffmpeg';
   const ffmpeg = spawnSync(executable, ['-version'], { encoding: 'utf8', timeout: 3000 });
-  const git = process.env.BROWSER_CHECK_REVISION ? null : spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 2000 });
-  const revision = process.env.BROWSER_CHECK_REVISION || (git?.status === 0 ? git.stdout.trim() : null);
+  const configuredRevision = process.env.BROWSER_CLI_REVISION || process.env.BROWSER_CHECK_REVISION;
+  const git = configuredRevision ? null : spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 2000 });
+  const revision = configuredRevision || (git?.status === 0 ? git.stdout.trim() : null);
   const changes = git?.status === 0 ? spawnSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8', timeout: 2000 }) : null;
   return { ok: true, version: pkg.version, revision, ...(changes?.status === 0 ? { dirty: Boolean(changes.stdout.trim()) } : {}),
     ffmpeg: { available: ffmpeg.status === 0, executable } };

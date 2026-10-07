@@ -4,7 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "bin": {
-    "browser-check": "./bin/browser-check.mjs"
+    "browser-cli": "./bin/browser-cli.mjs"
   },
   "engines": {
     "node": ">=22"
@@ -29,7 +29,7 @@
     "format": "biome format --write .",
     "lint": "biome lint .",
     "typecheck": "tsc --noEmit",
-    "test:browser-check": "node --test tests/browser-check/*.test.mjs",
+    "test:browser-cli": "node --test tests/browser-cli/*.test.mjs",
     "test:telegram": "node --experimental-transform-types --test tests/telegram/*.test.mjs",
     "test:extensions": "node --experimental-transform-types --test tests/extensions/*.test.mjs"
   },

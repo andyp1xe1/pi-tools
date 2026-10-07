@@ -29,7 +29,10 @@
     packages = cfg.recommendedPackages ++ cfg.extraPackages ++ [packageEntry];
   };
 in {
-  imports = [(import ./herdr.nix {inherit self;})];
+  imports = [
+    (import ./herdr.nix {inherit self;})
+    (lib.mkRenamedOptionModule ["programs" "pi-tools" "browserCheck"] ["programs" "pi-tools" "browserCli"])
+  ];
 
   options.programs.pi-tools = {
     enable = lib.mkEnableOption "pi-tools opinionated pi configuration";
@@ -37,11 +40,11 @@ in {
     package = lib.mkOption {
       type = lib.types.path;
       default =
-        if cfg.browserCheck.enable
+        if cfg.browserCli.enable
         then self.packages.${pkgs.stdenv.hostPlatform.system}.default
-        else self.packages.${pkgs.stdenv.hostPlatform.system}.without-browser-check;
-      defaultText = lib.literalExpression "pi-tools package, with or without browser-check based on browserCheck.enable";
-      description = "The pi package directory exposed to pi. The default excludes browser-check when browserCheck.enable is false.";
+        else self.packages.${pkgs.stdenv.hostPlatform.system}.without-browser-cli;
+      defaultText = lib.literalExpression "pi-tools package, with or without browser-cli based on browserCli.enable";
+      description = "The pi package directory exposed to pi. The default excludes browser-cli when browserCli.enable is false.";
     };
 
     theme = lib.mkOption {
@@ -69,25 +72,25 @@ in {
       description = "Telegram bridge integration.";
     };
 
-    browserCheck = lib.mkOption {
+    browserCli = lib.mkOption {
       type = lib.types.submodule {
         options = {
           enable = lib.mkOption {
             type = lib.types.bool;
             default = true;
-            description = "Install the browser-check CLI on PATH.";
+            description = "Install the browser-cli CLI on PATH.";
           };
 
           package = lib.mkOption {
             type = lib.types.package;
-            default = self.packages.${pkgs.stdenv.hostPlatform.system}.browser-check;
-            defaultText = lib.literalExpression "inputs.pi-tools.packages.\${pkgs.stdenv.hostPlatform.system}.browser-check";
-            description = "Browser-check CLI package to install into home.packages.";
+            default = self.packages.${pkgs.stdenv.hostPlatform.system}.browser-cli;
+            defaultText = lib.literalExpression "inputs.pi-tools.packages.\${pkgs.stdenv.hostPlatform.system}.browser-cli";
+            description = "Browser CLI package to install into home.packages.";
           };
         };
       };
       default = {};
-      description = "Browser-check CLI and skill installation. Disable to omit both and their Playwright dependency from the default pi package.";
+      description = "Browser CLI and skill installation. Disable to omit both and their Playwright dependency from the default pi package.";
     };
 
     audioTranscription = lib.mkOption {
@@ -139,7 +142,7 @@ in {
 
   config = lib.mkIf cfg.enable {
     home.packages =
-      lib.optional cfg.browserCheck.enable cfg.browserCheck.package
+      lib.optional cfg.browserCli.enable cfg.browserCli.package
       ++ lib.optional (cfg.piCliPackage != null) cfg.piCliPackage
       ++ lib.optional cfg.audioTranscription.enable cfg.audioTranscription.package;
 
