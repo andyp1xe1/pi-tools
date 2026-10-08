@@ -4,6 +4,7 @@ import { TelegramError } from "./errors.ts";
 import { chunkParagraphs } from "./messages.ts";
 
 interface PreviewState {
+  replyToMessageId: number;
   messages: Array<{ id: number; text: string }>;
   pendingText: string;
   lastSentText: string;
@@ -20,9 +21,10 @@ export class TelegramPreview {
 
   constructor(private readonly client: TelegramClient) {}
 
-  start(): void {
+  start(replyToMessageId = 0): void {
     if (this.state) this.close(this.state);
     this.state = {
+      replyToMessageId,
       messages: [],
       pendingText: "",
       lastSentText: "",
@@ -95,7 +97,13 @@ export class TelegramPreview {
       const existing = state.messages[index];
       if (!existing) {
         try {
-          const sent = await this.client.call("sendMessage", { chat_id: chatId, text: chunk });
+          const sent = await this.client.call("sendMessage", {
+            chat_id: chatId,
+            text: chunk,
+            ...(state.replyToMessageId > 0
+              ? { reply_parameters: { message_id: state.replyToMessageId, allow_sending_without_reply: false } }
+              : {}),
+          });
           state.messages.push({ id: sent.message_id, text: chunk });
         } catch (error) {
           if (!(error instanceof TelegramError)) state.creationUnknown = true;

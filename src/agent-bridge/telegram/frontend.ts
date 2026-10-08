@@ -231,7 +231,6 @@ export class TelegramFrontend implements BridgeFrontend {
       {
         chatId: Number(task.container.spaceId),
         ...(task.container.channelId === "general" ? {} : { threadId: Number(task.container.channelId) }),
-        replyToMessageId: Number(task.rootId),
         current,
         sent: (id) => {
           if (current())

@@ -34,7 +34,7 @@ export class TelegramPickers {
     this.actions.clear();
   }
 
-  async showModelPicker(chatId: number): Promise<void> {
+  async showModelPicker(chatId: number, replyToMessageId = 0): Promise<void> {
     const ctx = await this.agent.snapshot();
     if (!this.agent.current()) return;
     if (ctx.models.length === 0) {
@@ -42,13 +42,13 @@ export class TelegramPickers {
       return;
     }
     const markup = this.buildModelRoot(ctx);
-    await this.client.sendMenu(chatId, this.modelHeading(ctx), markup);
+    await this.client.sendMenu(chatId, this.modelHeading(ctx), markup, replyToMessageId);
   }
 
-  async showThinkingPicker(chatId: number): Promise<void> {
+  async showThinkingPicker(chatId: number, replyToMessageId = 0): Promise<void> {
     const ctx = await this.agent.snapshot();
     if (!this.agent.current()) return;
-    await this.client.sendMenu(chatId, this.thinkingHeading(ctx), this.buildThinkingMenu(ctx));
+    await this.client.sendMenu(chatId, this.thinkingHeading(ctx), this.buildThinkingMenu(ctx), replyToMessageId);
   }
 
   async handleCallback(query: TelegramCallbackQuery): Promise<boolean> {

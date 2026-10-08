@@ -116,18 +116,19 @@ test("two threads under one owner attach separate sessions; bubbles, menus and u
  await until(()=>a.prompts.length===1&&b.prompts.length===1);
  answer(a.client,a.prompts[0]!,"A answer");answer(b.client,b.prompts[0]!,"B answer");
  await until(()=>h.calls.some(c=>c.body.text==="A answer")&&h.calls.some(c=>c.body.text==="B answer"));
- for(const [text,task] of [["A answer",h.a],["B answer",h.b]] as const){
-  const call=h.calls.find(c=>c.body.text===text)!;expect(call.body).toMatchObject({chat_id:-1001,message_thread_id:42,reply_parameters:{message_id:Number(task.rootId),allow_sending_without_reply:false}});
+ for(const [text,task,requestId] of [["A answer",h.a,12],["B answer",h.b,13]] as const){
+  const call=h.calls.find(c=>c.body.text===text)!;expect(call.body).toMatchObject({chat_id:-1001,message_thread_id:42,reply_parameters:{message_id:requestId,allow_sending_without_reply:false}});
   const id=51+h.calls.indexOf(call);expect(h.store.taskForMessage({container:task.container,messageId:v.parse(MessageIdSchema,String(id))})?.id).toBe(task.id);
  }
  const bubble=h.calls.find(c=>c.body.text==="A answer")!;await h.adapter.accept(group(14,"@existing_bot continue",51+h.calls.indexOf(bubble),8,42,{entities:[{type:"mention",offset:0,length:13}]}));
  await until(()=>a.prompts.length===2);expect(b.prompts).toHaveLength(1);expect(h.store.snapshot().tasks).toHaveLength(2);
  await h.adapter.accept(group(15,"/model",11));await until(()=>h.calls.some(c=>c.body.reply_markup));
- const menu=h.calls.find(c=>c.body.reply_markup)!;expect(menu.body.reply_parameters).toEqual({message_id:11,allow_sending_without_reply:false});
+ const menu=h.calls.find(c=>c.body.reply_markup)!;expect(menu.body.reply_parameters).toEqual({message_id:15,allow_sending_without_reply:false});
  expect(h.store.taskForMessage({container:h.b.container,messageId:v.parse(MessageIdSchema,String(51+h.calls.indexOf(menu)))})?.id).toBe(h.b.id);
+ a.client.output({type:"turn-start",turnId:a.prompts[1]!.id});
  const file=join(h.root,"group-report.txt");writeFileSync(file,"group report");await a.client.sendAttachment({path:file,fileName:"group-report.txt"});
  const upload=h.calls.find(c=>c.method==="sendDocument")!;expect(upload.body).toMatchObject({chat_id:"-1001",message_thread_id:"42"});
- expect(JSON.parse(String(upload.body.reply_parameters))).toEqual({message_id:10,allow_sending_without_reply:false});
+ expect(JSON.parse(String(upload.body.reply_parameters))).toEqual({message_id:14,allow_sending_without_reply:false});
  expect(h.store.taskForMessage({container:h.a.container,messageId:v.parse(MessageIdSchema,String(51+h.calls.indexOf(upload)))})?.id).toBe(h.a.id);
  await a.client.disconnect();await b.client.disconnect();
 });

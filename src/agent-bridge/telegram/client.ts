@@ -50,7 +50,7 @@ export interface TelegramSendScope {
   replyToMessageId?: number;
   sent?(messageId: number): void;
 }
-export interface TelegramConversation extends TelegramSendScope {
+export interface TelegramConversation extends Omit<TelegramSendScope, "replyToMessageId"> {
   chatId: number;
   current(): boolean;
   signal: AbortSignal;
@@ -108,9 +108,6 @@ export class TelegramClient {
       body = {
         ...body,
         ...(scope.threadId === undefined ? {} : { message_thread_id: scope.threadId }),
-        ...(creates && scope.replyToMessageId && !body.reply_parameters
-          ? { reply_parameters: { message_id: scope.replyToMessageId, allow_sending_without_reply: false } }
-          : {}),
       };
     options = { ...options, signal: this.signal(options.signal) };
     if (this.transport) {
@@ -180,8 +177,22 @@ export class TelegramClient {
       ).message_id;
     return id;
   }
-  async sendMenu(chatId: number, text: string, replyMarkup: TelegramInlineKeyboardMarkup): Promise<number> {
-    return (await this.call("sendMessage", { chat_id: chatId, text, reply_markup: replyMarkup })).message_id;
+  async sendMenu(
+    chatId: number,
+    text: string,
+    replyMarkup: TelegramInlineKeyboardMarkup,
+    replyToMessageId = 0,
+  ): Promise<number> {
+    return (
+      await this.call("sendMessage", {
+        chat_id: chatId,
+        text,
+        reply_markup: replyMarkup,
+        ...(replyToMessageId > 0
+          ? { reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: false } }
+          : {}),
+      })
+    ).message_id;
   }
   async editMenu(
     chatId: number,
@@ -214,7 +225,8 @@ export class TelegramClient {
     if (this.transport) {
       if (chatId !== this.conversation?.chatId) throw new Error("Wrong attachment destination");
       await this.transport.sendAttachment(chatId, attachment, signal, {
-        ...this.conversation,
+        threadId: this.conversation.threadId,
+        replyToMessageId: destination?.replyToMessageId,
         sent: (id) => this.sent(id),
       });
       this.check();

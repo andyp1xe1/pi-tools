@@ -133,8 +133,8 @@ export class TelegramSession {
           message,
           agent: this.agent,
           client: this.client,
-          showModelPicker: () => this.pickers.showModelPicker(this.chatId),
-          showThinkingPicker: () => this.pickers.showThinkingPicker(this.chatId),
+          showModelPicker: () => this.pickers.showModelPicker(this.chatId, message.message_id),
+          showThinkingPicker: () => this.pickers.showThinkingPicker(this.chatId, message.message_id),
           run: (task) => this.run(task),
           cancelPending: () => this.cancelPending(),
         }),
@@ -261,7 +261,7 @@ export class TelegramSession {
     switch (event.type) {
       case "text-start":
         this.assistantError = undefined;
-        this.preview.start();
+        this.preview.start(this.active.replyToMessageId);
         break;
       case "text-update":
         this.preview.update(event.text);
@@ -287,7 +287,8 @@ export class TelegramSession {
     this.typing = undefined;
   }
   async sendAttachment(body: { path: string; fileName: string }, signal: AbortSignal): Promise<void> {
-    await this.client.sendAttachment(this.chatId, body, signal);
+    // Capture before any asynchronous I/O; later input must not retarget this upload.
+    await this.client.sendAttachment(this.chatId, body, signal, { replyToMessageId: this.active?.replyToMessageId });
   }
   async close(): Promise<void> {
     this.closed = true;
