@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentPort } from "../frontend.ts";
 import type { AgentOutput } from "../protocol.ts";
 import { TelegramClient, type TelegramConversation, type TelegramTransport } from "./client.ts";
-import { handleTelegramCommand, isControlMessage, messageCommand } from "./commands.ts";
+import { handleTelegramCommand, isControlMessage } from "./commands.ts";
 import { TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS } from "./constants.ts";
 import { TelegramPickers } from "./pickers.ts";
 import { TelegramPreview } from "./preview.ts";
@@ -115,16 +115,6 @@ export class TelegramSession {
       if (message.from.id !== this.userId) {
         this.run(
           this.client.sendText(this.chatId, message.message_id, "Only the attachment owner can control this session."),
-        );
-        return;
-      }
-      if (this.scope && messageCommand(message) === "/new") {
-        this.run(
-          this.client.sendText(
-            this.chatId,
-            message.message_id,
-            "This thread is bound to its existing Pi session. Start a separate thread for a new session.",
-          ),
         );
         return;
       }

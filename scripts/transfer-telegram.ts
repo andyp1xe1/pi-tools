@@ -39,7 +39,7 @@ export async function transferTelegram(options: { sourcePath:string; environment
 if (import.meta.main) {
  try {
   await transferTelegram({ sourcePath: process.argv[2] ?? join(homedir(), ".pi", "agent", "telegram.json"), environmentPath: environmentPath(), database: loadConfig().database });
-  process.stdout.write("Bot credentials, owner, and fresh cursor transferred. Source credential file removed. Start agent-bridge, then /bot-connect in Pi.\n");
+  process.stdout.write("Bot credentials, owner, and fresh cursor transferred. Source credential file removed. Start agent-bridge, then /bind <directory> in Telegram.\n");
  } catch(error) {
   process.stderr.write(`${error instanceof Error ? error.message : "Transfer failed. Contents redacted."}\n`);
   process.exitCode=1;

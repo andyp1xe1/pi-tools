@@ -7,6 +7,14 @@ import {
 	type RouteResult,
 } from "../../src/agent-bridge/domain.ts";
 import type { Store } from "../../src/agent-bridge/store.ts";
+import type { SessionBackend } from "../../src/agent-bridge/frontend.ts";
+
+/** Routing tests inject an offline backend, rather than another daemon operating mode. */
+export const unavailableBackend: SessionBackend = {
+  async open(target) { throw new Error(`Session backend is offline: ${target.routeId}`); },
+  async closeRoute() {},
+  async close() {},
+};
 
 export const topic: Container = {
 	platform: "telegram",

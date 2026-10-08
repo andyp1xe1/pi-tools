@@ -8,7 +8,7 @@ import { normalizeTelegram, TelegramFrontend } from "../../src/agent-bridge/tele
 import { type TelegramRequest, type TelegramAPI, TelegramHttpClient as TelegramClient } from "../../src/agent-bridge/telegram/api.ts";
 import { BotSchema, type TelegramMessage, TelegramMessageSchema } from "../../src/agent-bridge/telegram/schemas.ts";
 import { TelegramError, TelegramDeliveryUnknown } from "../../src/agent-bridge/telegram/errors.ts";
-import { seed, topic } from "./fixtures.ts";
+import { seed, topic, unavailableBackend } from "./fixtures.ts";
 
 const bot = { id: 99, username: "TaskBot" };
 const config: Config = { database: ":memory:", ownerTelegramUserIds: ["7"] };
@@ -76,17 +76,18 @@ function setup(owners = ["7"]) {
 	const store = new Store(":memory:");
 	stores.push(store);
 	const api = new FakeAPI();
-	return {
-		store,
-		api,
-		adapter: new TelegramFrontend(
-			{ ...config, ownerTelegramUserIds: owners },
-			store,
-			api,
-			bot,
-			new SharedTelegramClient(() => ({ botToken: "test" })),
-		),
-	};
+  const adapter = new TelegramFrontend(
+    { ...config, ownerTelegramUserIds: owners }, store, api, bot,
+    new SharedTelegramClient(() => ({ botToken: "test" })), unavailableBackend,
+  );
+  const accept = adapter.accept.bind(adapter);
+  adapter.accept = async (update) => {
+    const result = await accept(update);
+    // Session startup/outbox errors intentionally run outside routing's transaction.
+    await Bun.sleep(0);
+    return result;
+  };
+  return { store, api, adapter };
 }
 function normalized(raw: TelegramMessage) {
 	const event = normalizeTelegram(raw, bot);
@@ -188,7 +189,7 @@ test("commands for another bot are ignored; unknown commands keep task routing",
 	expect(normalized(raw).message.route.kind).toBe("start");
 });
 
-test("digit-containing commands remain text and explicit mentions take precedence over help", async () => {
+test("unknown digit-containing commands remain text, while recognized commands keep their meaning", async () => {
 	const { adapter, store } = setup();
 	seed(store);
 	for (const [index, name] of ["/foo2", "/help"].entries()) {
@@ -206,8 +207,8 @@ test("digit-containing commands remain text and explicit mentions take precedenc
 		update_id: 3,
 		message: command(12, "/test2", { reply_to_message: message(10) }),
 	});
-	expect(store.snapshot().tasks).toHaveLength(2);
-	expect(store.snapshot().inputs).toHaveLength(3);
+	expect(store.snapshot().tasks).toHaveLength(1);
+	expect(store.snapshot().inputs).toHaveLength(2);
 });
 
 test("unbound topics remain inactive and replayed updates create no duplicates", async () => {
@@ -255,7 +256,7 @@ test("mapped reply chains take precedence over mentions",  async () => {
 	expect(snapshot.inputs.at(1)?.taskId).toBe(snapshot.inputs.at(0)?.taskId);
 });
 
-test("successful acknowledgements keep the topic and map bot reply IDs", async () => {
+test("startup failure replies keep the topic and map bot reply IDs", async () => {
 	const { adapter, store, api } = setup();
 	seed(store);
 	await adapter.accept({ update_id: 1, message: mention(10) });
@@ -271,7 +272,7 @@ test("successful acknowledgements keep the topic and map bot reply IDs", async (
 	expect(store.snapshot().inputs).toHaveLength(2);
 });
 
-test("reply ingestion can recover an acknowledgement before sendMessage returns", async () => {
+test("reply ingestion can recover a startup reply before sendMessage returns", async () => {
 	const { adapter, store, api } = setup();
 	seed(store);
 	await adapter.accept({ update_id: 1, message: mention(10) });
@@ -292,7 +293,7 @@ test("reply ingestion can recover an acknowledgement before sendMessage returns"
 	expect(store.snapshot().inputs).toHaveLength(2);
 });
 
-test("published acknowledgements also recover after a missing send result, but copied text does not", async () => {
+test("published startup replies recover after a missing send result, but copied text does not", async () => {
 	const { adapter, store } = setup();
 	seed(store);
 	await adapter.accept({ update_id: 1, message: mention(10) });

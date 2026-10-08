@@ -16,9 +16,10 @@ import { TelegramUpdateSchema, type TelegramUpdate } from "../../src/agent-bridg
 import { MessageIdSchema } from "../../src/agent-bridge/domain.ts";
 import type { SessionBackend, SessionTarget } from "../../src/agent-bridge/frontend.ts";
 import * as v from "valibot";
+import { unavailableBackend } from "./fixtures.ts";
 const roots:string[]=[];const servers:BridgeServer[]=[];const stores:Store[]=[];
 afterEach(async()=>{for(const server of servers.splice(0))await server.close();for(const store of stores.splice(0))store.close();for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
-async function setup(owners=["7"], backend?:SessionBackend){
+async function setup(owners=["7"], backend:SessionBackend=unavailableBackend){
  const root=mkdtempSync(join(tmpdir(),"bridge-ipc-"));roots.push(root);chmodSync(root,0o700);
  const path=join(root,"bridge.sock");const calls:{method:string;body:Record<string,unknown>}[]=[];
  const fetcher=async(url:string,init:RequestInit)=>{
@@ -148,8 +149,8 @@ test("attachment cwd, durable session identity, selected owner and cross-route c
 test("group members can submit but controls and callbacks are attachment-owner-only; foreign bot commands are ignored",async()=>{
  const h=await groupSetup(["7","8"]);const a=await connect(h.path,"pi-A","7",h.a.id,h.root);
  await h.adapter.accept(group(12,"member input",10,8));await until(()=>a.prompts.length===1);
- for(const [i,text] of ["/stop","/status","/model","/thinking","/compact","/new"].entries()) await h.adapter.accept(group(13+i,text,10,8));
- await until(()=>h.calls.filter(c=>String(c.body.text).includes("Only the attachment owner")).length===6);expect(a.commands).toHaveLength(0);
+ for(const [i,text] of ["/stop","/status","/model","/thinking","/compact"].entries()) await h.adapter.accept(group(13+i,text,10,8));
+ await until(()=>h.calls.filter(c=>String(c.body.text).includes("Only the attachment owner")).length===5);expect(a.commands).toHaveLength(0);
  await h.adapter.accept(group(20,"/stop@other_bot",10));expect(a.commands).toHaveLength(0);
  await h.adapter.accept(group(21,"/model@existing_bot",10));await until(()=>h.calls.some(c=>c.body.reply_markup));
  const menu=h.calls.find(c=>c.body.reply_markup)!;const menuId=51+h.calls.indexOf(menu);const markup=menu.body.reply_markup as {inline_keyboard:{callback_data:string}[][]};
@@ -157,8 +158,11 @@ test("group members can submit but controls and callbacks are attachment-owner-o
  await h.adapter.accept(callback(22,8));await h.adapter.accept(callback(23,7,43));expect(a.commands).toHaveLength(1);
  await h.adapter.accept(callback(24,7));await until(()=>h.calls.some(c=>c.method==="editMessageText"));
  await h.adapter.accept(group(25,"/release",10,8));expect(h.store.taskAttachment(h.a.id)?.ownerId).toBe("7");expect(a.client.isAttached).toBe(true);
- for (const [index,text] of ["/new", "/NEW@EXISTING_BOT", "/new ignored-argument"].entries()) await h.adapter.accept(group(26+index,text,10));
- await until(()=>h.calls.filter(c=>String(c.body.text).includes("bound to its existing")).length===3);expect(a.commands).toHaveLength(2);
+ const previousTasks=h.store.snapshot().tasks.length;
+ for (const [index,text] of ["/new", "/NEW@EXISTING_BOT", "/new request"].entries()) await h.adapter.accept(group(26+index,text,10,index===0?8:7));
+ expect(h.store.snapshot().tasks).toHaveLength(previousTasks+3);
+ expect(h.store.taskAttachment(h.a.id)?.sessionId).toBe("pi-A");
+ expect(a.client.isAttached).toBe(true);expect(a.commands).toHaveLength(2);
  await h.adapter.accept(group(29,"/release",10));await until(()=>!a.client.isAttached);expect(h.store.taskAttachment(h.a.id)).toBeNull();
  const replacement=await connect(h.path,"pi-new","8",h.a.id,h.root);expect(replacement.prompts).toHaveLength(0);await replacement.client.disconnect();
 });

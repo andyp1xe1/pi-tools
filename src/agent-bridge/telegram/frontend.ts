@@ -132,7 +132,7 @@ export class TelegramFrontend implements BridgeFrontend {
     readonly api: TelegramAPI,
     readonly bot: BotIdentity,
     readonly client: TelegramClient,
-    private readonly backend?: SessionBackend,
+    private readonly backend: SessionBackend,
   ) {
     this.identity = { id: `telegram:${bot.id}`, label: `@${bot.username}` };
     this.mode = config.ownerTelegramUserIds.length ? "routing" : "setup";
@@ -257,7 +257,7 @@ export class TelegramFrontend implements BridgeFrontend {
     if (start) start.cancelled = true;
     this.starts.delete(taskId);
     this.server?.detachRoute(taskId);
-    void this.backend?.closeRoute(taskId).catch(() => {});
+    void this.backend.closeRoute(taskId).catch(() => {});
   }
   private async deliverPrivate(update: TelegramUpdate): Promise<boolean> {
     const message = update.message ?? update.edited_message;
@@ -268,20 +268,12 @@ export class TelegramFrontend implements BridgeFrontend {
     const addressed = /^\/[a-z0-9_]+@([a-z0-9_]+)(?:\s|$)/i.exec((message?.text ?? message?.caption ?? "").trim());
     if (addressed?.[1] && addressed[1].toLowerCase() !== this.bot.username.toLowerCase()) return true;
     const command = message ? messageCommand(message) : "";
-    if (
-      this.backend &&
-      this.config.ownerTelegramUserIds.includes(String(from.id)) &&
-      ["/bind", "/unbind", "/where"].includes(command)
-    )
+    if (this.config.ownerTelegramUserIds.includes(String(from.id)) && ["/bind", "/unbind", "/where"].includes(command))
       return false;
     const peer = this.server?.attachment(`dm:${from.id}`);
     const frontend = peer?.frontend;
     const container = { platform: "telegram" as const, spaceId: String(from.id), channelId: "general" };
-    if (
-      !(frontend instanceof TelegramSession) &&
-      this.backend &&
-      this.config.ownerTelegramUserIds.includes(String(from.id))
-    ) {
+    if (!(frontend instanceof TelegramSession) && this.config.ownerTelegramUserIds.includes(String(from.id))) {
       if (this.store.binding(container) || ["/bind", "/unbind", "/where", "/help", "/start", "/new"].includes(command))
         return false;
     }
@@ -292,10 +284,8 @@ export class TelegramFrontend implements BridgeFrontend {
       const status = this.server?.inspect();
       const text =
         /^\/status(?:@\w+)?(?:\s|$)/i.test(message?.text?.trim() ?? "") && status
-          ? `Bot: ${this.identity.label}\nDaemon: ${status.mode}, up ${status.uptimeSeconds}s\nTopics: ${status.statistics.topics}; tasks: ${status.statistics.tasks}\nPending replies: ${status.statistics.pendingReplies}; failed: ${status.statistics.failedReplies}\nNo agent session attached. ${this.backend ? "Use /bind <directory> to start saved Pi conversations." : "Use /bot-connect in Pi."}`
-          : this.backend
-            ? "No project is bound. Use /bind <directory> to start saved Pi conversations here."
-            : "No agent session attached. Run /bot-connect in the Pi conversation you want to use.";
+          ? `Bot: ${this.identity.label}\nDaemon: ${status.mode}, up ${status.uptimeSeconds}s\nTopics: ${status.statistics.topics}; tasks: ${status.statistics.tasks}\nPending replies: ${status.statistics.pendingReplies}; failed: ${status.statistics.failedReplies}\nNo agent session attached. Use /bind <directory> to start saved Pi conversations.`
+          : "No project is bound. Use /bind <directory> to start saved Pi conversations here.";
       await this.client.sendText(chat.id, message?.message_id ?? 0, text);
     } else if (update.message && !this.config.ownerTelegramUserIds.length)
       await this.client.sendText(
@@ -310,7 +300,7 @@ export class TelegramFrontend implements BridgeFrontend {
     this.starts.set(task.id, start);
     const job = (async () => {
       const project = this.store.project(task.projectId);
-      if (!project || !this.backend) throw new Error("No session backend is available.");
+      if (!project) throw new Error("The conversation's project is unavailable.");
       const association = this.store.taskAttachment(task.id);
       const authorId = this.store.taskAuthor(task.id);
       const ownerId =
@@ -407,8 +397,7 @@ export class TelegramFrontend implements BridgeFrontend {
       ? normalizeTelegram(
           raw,
           this.bot,
-          !!this.backend &&
-            raw.chat.type === "private" &&
+          raw.chat.type === "private" &&
             raw.chat.id === raw.from?.id &&
             this.config.ownerTelegramUserIds.includes(String(raw.from.id)),
         )
@@ -428,7 +417,7 @@ export class TelegramFrontend implements BridgeFrontend {
         const { message, command } = normalized;
         let reply: string | null = null;
         let taskId: TaskId | null = null;
-        const fresh = command?.kind === "new" && !!this.backend;
+        const fresh = command?.kind === "new";
         if (fresh) {
           message.route = { kind: "start", rootId: message.id };
           message.text = command.request;
@@ -441,7 +430,7 @@ export class TelegramFrontend implements BridgeFrontend {
             : null;
           reply = task ? this.releaseTask(task.id, message.authorId) : "Reply to a tracked thread to release it.";
           taskId = task?.id ?? null;
-        } else if (command && command.kind !== "new" && (this.backend || message.route.kind !== "start")) {
+        } else if (command && command.kind !== "new") {
           const owner = this.config.ownerTelegramUserIds.includes(message.authorId);
           const before = this.store.binding(message.container);
           reply = this.control.execute({ container: message.container, owner, command });
@@ -473,7 +462,7 @@ export class TelegramFrontend implements BridgeFrontend {
           }
           // Commands are scoped deliberately before ordinary prompt routing.
           const control = raw && isControlMessage(raw) && !fresh;
-          if (control && (this.backend || message.route.kind !== "start")) {
+          if (control) {
             const parentId =
               message.route.kind === "reply" || message.route.kind === "start" ? message.route.parentId : undefined;
             const parentTask = parentId
@@ -491,7 +480,7 @@ export class TelegramFrontend implements BridgeFrontend {
                     : null;
                   return task && containerKey(task.container) === containerKey(message.container);
                 });
-                reply = `Project: ${project?.directory ?? "unbound"}\nBackend: ${this.backend ? "native Pi SDK" : "manual attachment"}\nActive sessions: ${active.length}`;
+                reply = `Project: ${project?.directory ?? "unbound"}\nBackend: native Pi SDK\nActive sessions: ${active.length}`;
               } else {
                 const active = this.store
                   .tasksFor(message.container)
@@ -556,7 +545,7 @@ export class TelegramFrontend implements BridgeFrontend {
                   message: { ...raw, ...(raw.text === undefined ? { caption: message.text } : { text: message.text }) },
                 },
               };
-            } else if (this.backend && raw) {
+            } else if (raw) {
               start = {
                 task: result.task,
                 empty: fresh && !message.text && !collectTelegramFileInfos([raw]).length,
@@ -565,8 +554,7 @@ export class TelegramFrontend implements BridgeFrontend {
                   message: { ...raw, ...(raw.text === undefined ? { caption: message.text } : { text: message.text }) },
                 },
               };
-            } else
-              reply = `${result.created ? "New thread" : "Continuing thread"}: ${result.task.id}\nNo live Pi session attached. Use /bot-connect ${result.task.id} [owner ID]. This input will not be replayed.`;
+            }
           } else if (result.kind === "ignored" && message.route.kind !== "ignore") {
             reply =
               result.reason === "unbound"

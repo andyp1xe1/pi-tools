@@ -26,9 +26,9 @@ AGENT_BRIDGE_OWNER_IDS lists the owners' Telegram IDs, separated by commas.
 AGENT_BRIDGE_DATABASE overrides the local SQLite path.
 
 Loads $XDG_CONFIG_HOME/agent-bridge/env (default ~/.config/agent-bridge/env).
-Bind a topic with /bind ~/dev/project. Attach an existing Pi session with
-/bot-connect task_<id> [owner ID], or /bot-connect [owner ID] for its DM.
-This daemon does not launch agents or worktrees.`;
+Bind a chat/topic with /bind ~/dev/project to start saved native Pi sessions.
+Optionally attach a visible Pi session with /bot-connect task_<id> [owner ID],
+or /bot-connect [owner ID] for its DM. No worktrees are created automatically.`;
 
 async function sleep(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return;
@@ -96,6 +96,8 @@ export async function run(options: { backend?: SessionBackend } = {}): Promise<v
     }
     return;
   }
+  const backend = options.backend;
+  if (!backend) throw new Error("A native session backend is required to start agent-bridge.");
   const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
   if (!token) throw new Error("Set TELEGRAM_BOT_TOKEN in the bridge environment file.");
   const api = new TelegramHttpClient(token);
@@ -118,7 +120,7 @@ export async function run(options: { backend?: SessionBackend } = {}): Promise<v
   process.once("SIGTERM", shutdown);
   try {
     store = new Store(config.database);
-    const activeFrontend = new TelegramFrontend(config, store, api, bot, dmClient, options.backend);
+    const activeFrontend = new TelegramFrontend(config, store, api, bot, dmClient, backend);
     frontend = activeFrontend;
     server = new BridgeServer(activeFrontend, shutdown);
     activeFrontend.connect(server);
@@ -223,7 +225,7 @@ export async function run(options: { backend?: SessionBackend } = {}): Promise<v
   } finally {
     process.removeListener("SIGINT", shutdown);
     process.removeListener("SIGTERM", shutdown);
-    const closed = await Promise.allSettled([frontend?.close(), options.backend?.close()]);
+    const closed = await Promise.allSettled([frontend?.close(), backend.close()]);
     try {
       await server?.close();
     } finally {
