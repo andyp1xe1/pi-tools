@@ -38,7 +38,7 @@ export class TelegramPickers {
     const ctx = await this.agent.snapshot();
     if (!this.agent.current()) return;
     if (ctx.models.length === 0) {
-      await this.client.sendText(chatId, 0, "No authenticated models are available.");
+      await this.client.sendText(chatId, replyToMessageId, "No authenticated models are available.");
       return;
     }
     const markup = this.buildModelRoot(ctx);

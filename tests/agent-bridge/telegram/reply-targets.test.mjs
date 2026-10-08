@@ -107,4 +107,7 @@ test("model and thinking menus reply to their command message", async (t) => {
   await tick();
   assert.deepEqual(h.calls.find((call) => call.reply_markup)?.reply_parameters,
     { message_id: 30, allow_sending_without_reply: false });
+  await h.receive(31, "/model"); await tick();
+  assert.deepEqual(h.calls.find((call) => call.text === "No authenticated models are available.")?.reply_parameters,
+    { message_id: 31, allow_sending_without_reply: false });
 });
