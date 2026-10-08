@@ -422,6 +422,19 @@ test("snapshot and reverse Pi controls validate bodies, scoped models, supported
   assert.equal(await h.backend("compact"), false); assert.equal(await h.backend("newSession"), false);
 });
 
+test("shared controls hold input and reject overlapping mutations until model selection completes", async (t) => {
+  const h = harness(t); await h.start(); const gate = deferred();
+  h.pi.setModel = async () => { await gate.promise; return true; };
+  const selection = h.backend("setModel", { provider: "fake", id: "next" });
+  h.receive(prompt("wait for model")); await nextTick(); await h.tick();
+  assert.deepEqual(h.submissions, []);
+  assert.equal(await h.backend("compact"), false);
+  assert.equal(await h.backend("setModel", { provider: "fake", id: "next" }), false);
+  await assert.rejects(h.backend("setThinking", { level: "high" }), /busy/);
+  gate.resolve(); assert.equal(await selection, true); await h.tick();
+  assert.deepEqual(h.texts(), ["[telegram] wait for model"]);
+});
+
 for (const reason of ["new", "resume", "fork", "reload"]) {
   test(`${reason} retains selected owner and fences old sockets, tools, output, and provider release`, async (t) => {
     const old = harness(t); await old.emit("session_start", { reason: "startup" }); await old.command("bot-connect", "77");

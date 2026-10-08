@@ -37,7 +37,7 @@ function fixture(t, topic = false) {
     session.output({ type: "text-end", text });
     session.output({ type: "settled" });
   };
-  return { session, prompts, calls, uploads, receive, start, finish };
+  return { session, transport, prompts, calls, uploads, receive, start, finish };
 }
 
 for (const topic of [false, true]) {
@@ -63,6 +63,14 @@ for (const topic of [false, true]) {
 
 test("queued streaming bubbles capture their original turn while a later input is acknowledged", async (t) => {
   const h = fixture(t, true);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const call = h.transport.call;
+  h.transport.call = async (method, body) => {
+    const result = await call(method, body);
+    if (body.text === "partial") await gate;
+    return result;
+  };
   const original = h.session; // A queued finalize must not consult the later active route.
   h.start(await h.receive(10));
   original.output({ type: "text-update", text: "partial" });
@@ -70,9 +78,27 @@ test("queued streaming bubbles capture their original turn while a later input i
   h.finish("a".repeat(MAX_MESSAGE_LENGTH) + "first tail");
   h.start(await h.receive(20));
   h.finish("second answer");
-  await tick(); await tick();
+  assert.equal(h.calls.filter((call) => call.method === "sendMessage").length, 1);
+  release();
+  for (let i = 0; i < 10; i++) await tick();
   const creations = h.calls.filter((call) => call.method === "sendMessage");
   assert.deepEqual(creations.map((call) => call.reply_parameters.message_id), [10, 10, 20]);
+});
+
+test("an in-flight upload keeps its captured reply target when another turn starts", async (t) => {
+  const h = fixture(t, true);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  h.transport.sendAttachment = async (chatId, body, signal, destination) => {
+    await gate;
+    h.uploads.push({ chatId, body, destination });
+  };
+  h.start(await h.receive(10));
+  const pending = h.session.sendAttachment({ path: "/tmp/report.txt", fileName: "report.txt" }, new AbortController().signal);
+  h.start(await h.receive(20));
+  release(); await pending;
+  assert.equal(h.uploads[0].destination.replyToMessageId, 10);
+  assert.equal(h.uploads[0].destination.threadId, 42);
 });
 
 test("model and thinking menus reply to their command message", async (t) => {

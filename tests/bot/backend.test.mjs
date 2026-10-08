@@ -298,6 +298,33 @@ test("abort cancels in-flight preparation and late completion cannot publish", a
   assert.deepEqual(h.clients[0].outputs, [{ type: "delivery-error", turnId: "cancelled", error: "Bot input cancelled" }]);
 });
 
+test("stop fences native authentication still in flight while Pi is idle", async (t) => {
+  const h = await harness(t); await h.backend.open(h.target());
+  const session = h.sessions[0], client = h.clients[0];
+  session.auth = false; session.authGate = deferred();
+  h.receive(prompt("cancelled")); await nextTick();
+  assert.equal(await h.request("abort"), true);
+  session.auth = true; session.authGate.resolve(); await nextTick();
+  assert.deepEqual(session.submissions, []);
+  assert.deepEqual(client.outputs, [{ type: "delivery-error", turnId: "cancelled", error: "Bot input cancelled" }]);
+  h.receive(prompt("fresh")); await until(() => session.submissions.length === 1);
+  assert.equal(session.submissions[0].message.details.turnId, "fresh");
+});
+
+test("shared controls hold native input and reject overlapping mutations", async (t) => {
+  const h = await harness(t); await h.backend.open(h.target());
+  const session = h.sessions[0]; session.modelGate = deferred();
+  const selection = h.request("setModel", { provider: "fake", id: "second" });
+  h.receive(prompt("wait for model")); await nextTick();
+  assert.deepEqual(session.submissions, []);
+  assert.equal(await h.request("compact"), false);
+  assert.equal(await h.request("setModel", { provider: "fake", id: "first" }), false);
+  await assert.rejects(h.request("setThinking", { level: "high" }), /busy/);
+  session.modelGate.resolve(); assert.equal(await selection, true);
+  await until(() => session.submissions.length === 1);
+  assert.equal(session.model.id, "second");
+});
+
 for (const phase of ["services", "session", "bind", "attach"]) {
   test(`close during ${phase} startup waits for cleanup and never publishes a mapping`, async (t) => {
     const gate = deferred(); const h = await harness(t, { [`${phase}Gate`]: gate });
