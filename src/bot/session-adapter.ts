@@ -1,20 +1,17 @@
 import { randomUUID } from "node:crypto";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as v from "valibot";
 import { BridgeClient, registerBridgeTranscription } from "../agent-bridge/client.ts";
 import {
-  AgentOperationBodies,
   type AgentOutput,
   type AgentRequest,
-  type PreparedPrompt,
   type ServerFrame,
   ThinkingLevelSchema,
 } from "../agent-bridge/protocol.ts";
 import { registerAudioTranscriptionTool } from "../audio-transcription/index.ts";
-import { BotInbox, type BotSubmission } from "./inbox.ts";
-import { BOT_MESSAGE_TYPE, getBotTurnId, getMessageText, type PendingBotTurn, preparePrompt } from "./messages.ts";
-import { agentSnapshot, availableModels } from "./status.ts";
+import { handleBotRequest } from "./controls.ts";
+import { BotDelivery } from "./delivery.ts";
+import { preparePrompt } from "./messages.ts";
 import { registerBotTools, type ToolConnection } from "./tools.ts";
 
 const SYSTEM_PROMPT_SUFFIX = `
@@ -65,62 +62,46 @@ export class BotSessionAdapter {
   private lastConnectionError?: string;
   private needsIdleBeforeAttach = false;
   private waitForIdleAfterReload = false;
-  private activeTurnId?: string;
-  private lastAssistantError?: string;
   private agentRunning = false;
+  private aborting = false;
   private compacting = false;
   private releaseTranscription?: () => void;
   private readonly queuedActions = new Set<ReturnType<typeof setTimeout>>();
-  private readonly preparations = new Set<AbortController>();
   private readonly mutations = new Set<Promise<unknown>>();
-  private readonly inbox: BotInbox;
+  private readonly delivery: BotDelivery;
+  private get inbox() {
+    return this.delivery.inbox;
+  }
+  private get activeTurnId() {
+    return this.delivery.activeTurnId;
+  }
 
   constructor(
     private readonly pi: ExtensionAPI,
     private readonly createClient: ClientFactory = (options) => new BridgeClient(options),
     private readonly prepare: typeof preparePrompt = preparePrompt,
   ) {
-    this.inbox = new BotInbox({
+    this.delivery = new BotDelivery({
+      current: () => this.isCurrentRuntime() && this.connection?.isAttached === true,
+      prepare: this.prepare,
+      send: (message) => this.pi.sendMessage(message, { triggerTurn: true, deliverAs: "steer" }),
+      output: (event, ctx) => this.output(event, ctx),
       ready: (ctx) => {
-        if (ctx.isIdle()) this.waitForIdleAfterReload = false;
+        if (ctx.isIdle()) {
+          this.waitForIdleAfterReload = false;
+          this.aborting = false;
+        }
         return (
           this.isCurrentRuntime() &&
           !this.waitForIdleAfterReload &&
+          !this.aborting &&
+          !this.mutations.size &&
           !this.compacting &&
           (this.agentRunning || ctx.isIdle())
         );
       },
-      submit: (turn, ctx, submission) => this.submitTurn(turn, ctx, submission),
       changed: (ctx) => this.updateStatus(ctx),
-      failed: (turn, ctx, error) =>
-        this.output({ type: "delivery-error", turnId: turn.id, error: this.errorMessage(error) }, ctx),
     });
-    this.inbox.pause();
-  }
-
-  private async submitTurn(turn: PendingBotTurn, ctx: ExtensionContext, submission: BotSubmission): Promise<void> {
-    const generation = this.generation;
-    const connection = this.connection;
-    const current = (): boolean =>
-      submission.isCurrent() &&
-      generation === this.generation &&
-      this.isCurrentRuntime() &&
-      connection === this.connection &&
-      connection?.isAttached === true;
-    if (!current()) return;
-    const model = ctx.model;
-    if (!model) throw new Error("No model selected. Select a model before sending bot input.");
-    const hasAuth =
-      ctx.modelRegistry.hasConfiguredAuth(model) ||
-      (await ctx.modelRegistry.getProviderAuth(model.provider)) !== undefined;
-    if (!current()) return;
-    if (!hasAuth) throw new Error(`No API key found for ${model.provider}. Use /login or configure an API key.`);
-    submission.emit(() =>
-      this.pi.sendMessage(
-        { customType: BOT_MESSAGE_TYPE, content: turn.content, display: true, details: { turnId: turn.id } },
-        { triggerTurn: true, deliverAs: "steer" },
-      ),
-    );
   }
 
   register(): void {
@@ -209,11 +190,7 @@ export class BotSessionAdapter {
     this.releaseTranscription = undefined;
     for (const action of this.queuedActions) clearTimeout(action);
     this.queuedActions.clear();
-    for (const preparation of this.preparations) preparation.abort();
-    this.preparations.clear();
-    this.inbox.stop();
-    this.activeTurnId = undefined;
-    this.lastAssistantError = undefined;
+    this.delivery.stop();
     this.identity = undefined;
   }
   private async disconnect(): Promise<void> {
@@ -271,10 +248,7 @@ export class BotSessionAdapter {
       },
       onPrompt: (prompt) => {
         if (!current()) return;
-        void this.receivePrompt(prompt, ctx, current).catch((error: unknown) => {
-          if (current())
-            this.output({ type: "delivery-error", turnId: prompt.id, error: this.errorMessage(error) }, ctx);
-        });
+        void this.delivery.receive(prompt, ctx);
       },
       onAgentRequest: async (request) => {
         if (!current()) throw new Error("Agent bridge attachment changed");
@@ -306,60 +280,39 @@ export class BotSessionAdapter {
     }
   }
 
-  private async receivePrompt(prompt: PreparedPrompt, ctx: ExtensionContext, current: () => boolean): Promise<void> {
-    const slot = this.inbox.reserve(ctx);
-    const preparation = new AbortController();
-    this.preparations.add(preparation);
-    try {
-      const turn = await this.prepare(prompt, preparation.signal);
-      if (current()) slot.complete(turn);
-      else slot.cancel();
-    } catch (error) {
-      slot.cancel();
-      throw error;
-    } finally {
-      this.preparations.delete(preparation);
-    }
-  }
-
-  private async handleAgentRequest(request: AgentRequest, ctx: ExtensionContext): Promise<unknown> {
-    switch (request.operation) {
-      case "snapshot":
-        v.parse(AgentOperationBodies.snapshot, request.body);
-        return agentSnapshot(this.pi, ctx);
-      case "abort":
-        v.parse(AgentOperationBodies.abort, request.body);
-        if (ctx.isIdle()) return false;
-        ctx.abort();
-        return true;
-      case "setModel": {
-        const body = v.parse(AgentOperationBodies.setModel, request.body);
-        if (!ctx.isIdle()) return false;
-        const model = availableModels(ctx).find((model) => model.provider === body.provider && model.id === body.id);
-        return model ? this.trackMutation(() => this.pi.setModel(model)) : false;
-      }
-      case "setThinking": {
-        const body = v.parse(AgentOperationBodies.setThinking, request.body);
-        if (!ctx.isIdle()) throw new Error("Pi is busy. Wait for the current turn to finish.");
-        this.pi.setThinkingLevel(body.level);
+  private handleAgentRequest(request: AgentRequest, ctx: ExtensionContext): Promise<unknown> {
+    return handleBotRequest(request, {
+      ctx,
+      busy: () => this.compacting || this.mutations.size > 0,
+      getThinkingLevel: () => v.parse(ThinkingLevelSchema, this.pi.getThinkingLevel()),
+      setThinkingLevel: (level) => {
+        this.pi.setThinkingLevel(level);
         return v.parse(ThinkingLevelSchema, this.pi.getThinkingLevel());
-      }
-      case "compact":
-        v.parse(AgentOperationBodies.compact, request.body);
-        if (!ctx.isIdle()) return false;
-        return this.trackMutation(
-          () =>
-            new Promise<boolean>((resolve, reject) => {
-              ctx.compact({ onComplete: () => resolve(true), onError: reject });
-            }),
-        );
-      case "newSession":
-        v.parse(AgentOperationBodies.newSession, request.body);
-        if (!ctx.isIdle() || this.identity?.routeId?.startsWith("task_")) return false;
+      },
+      setModel: (model) => this.pi.setModel(model),
+      mutate: (operation) =>
+        this.trackMutation(operation).finally(() => {
+          if (this.isCurrentRuntime()) this.inbox.schedule(ctx);
+        }),
+      compact: () =>
+        new Promise<boolean>((resolve, reject) => {
+          ctx.compact({ onComplete: () => resolve(true), onError: reject });
+        }),
+      abort: () => {
+        const pending = this.delivery.cancelPending(ctx);
+        const running = !ctx.isIdle();
+        this.aborting = running;
+        if (running) ctx.abort();
+        this.inbox.resume(ctx);
+        return pending || running;
+      },
+      newSession: () => {
+        if (this.identity?.routeId?.startsWith("task_")) return false;
         // Let the portable client write agent-result before this action detaches it.
         this.queueNewSession(ctx);
         return true;
-    }
+      },
+    });
   }
 
   private queueNewSession(ctx: ExtensionContext): void {
@@ -462,6 +415,7 @@ export class BotSessionAdapter {
       registerAudioTranscriptionTool(this.pi);
       this.compacting = false;
       this.agentRunning = false;
+      this.aborting = false;
       this.needsIdleBeforeAttach = false;
       this.waitForIdleAfterReload = event.reason === "reload" && !ctx.isIdle();
       const intent = readProcessIntent();
@@ -493,28 +447,13 @@ export class BotSessionAdapter {
       this.inbox.schedule(ctx);
       this.updateStatus(ctx);
     });
-    this.pi.on("message_start", async (event, ctx) => this.onMessageStart(event.message, ctx));
-    this.pi.on("message_update", async (event, ctx) => {
-      if (this.activeTurnId && event.message.role === "assistant")
-        this.output({ type: "text-update", text: getMessageText(event.message) }, ctx);
-    });
-    this.pi.on("message_end", async (event, ctx) => {
-      if (!this.isCurrentRuntime() || !this.activeTurnId || event.message.role !== "assistant") return;
-      this.lastAssistantError =
-        event.message.stopReason === "error"
-          ? event.message.errorMessage || "Pi failed while processing the request."
-          : undefined;
-      this.output({ type: "text-end", text: getMessageText(event.message), error: this.lastAssistantError }, ctx);
-    });
+    this.pi.on("message_start", async (event, ctx) => this.delivery.messageStart(event.message, ctx));
+    this.pi.on("message_update", async (event, ctx) => this.delivery.messageUpdate(event.message, ctx));
+    this.pi.on("message_end", async (event, ctx) => this.delivery.messageEnd(event.message, ctx));
     this.pi.on("agent_settled", async (_event, ctx) => {
       if (!this.isCurrentRuntime()) return;
-      if (this.activeTurnId) this.output({ type: "settled", error: this.lastAssistantError }, ctx);
-      this.activeTurnId = undefined;
-      this.lastAssistantError = undefined;
       this.agentRunning = false;
-      this.inbox.rejectUnacknowledged(ctx);
-      this.updateStatus(ctx);
-      this.inbox.schedule(ctx);
+      this.delivery.agentSettled(ctx);
     });
   }
   private async onSessionShutdown(reason = "quit"): Promise<void> {
@@ -529,27 +468,5 @@ export class BotSessionAdapter {
     await closing;
     const latest = readProcessIntent();
     if (latest.closing === closing) writeProcessIntent({ ...latest, closing: undefined });
-  }
-  private onMessageStart(message: AgentMessage, ctx: ExtensionContext): void {
-    if (!this.isCurrentRuntime()) return;
-    const turn = this.inbox.take(message, ctx);
-    if (turn) {
-      if (this.inbox.isPaused) return;
-      this.activeTurnId = turn.id;
-      this.lastAssistantError = undefined;
-      this.output({ type: "turn-start", turnId: turn.id }, ctx);
-      this.updateStatus(ctx);
-    } else if (this.activeTurnId && (message.role === "user" || message.role === "custom")) {
-      if (getBotTurnId(message) === this.activeTurnId) return;
-      // End the bot's output route before terminal or other extension input.
-      // The daemon settles its preview and typing loop; Pi keeps running.
-      this.activeTurnId = undefined;
-      this.lastAssistantError = undefined;
-      this.output({ type: "settled" }, ctx);
-      this.updateStatus(ctx);
-    } else if (this.activeTurnId && message.role === "assistant") {
-      this.lastAssistantError = undefined;
-      this.output({ type: "text-start" }, ctx);
-    }
   }
 }

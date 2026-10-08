@@ -17,16 +17,11 @@ import {
 import * as v from "valibot";
 import { BridgeClient } from "../agent-bridge/client.ts";
 import type { SessionBackend, SessionTarget } from "../agent-bridge/frontend.ts";
-import {
-  AgentOperationBodies,
-  type AgentOutput,
-  type AgentRequest,
-  type PreparedPrompt,
-} from "../agent-bridge/protocol.ts";
+import type { AgentOutput, AgentRequest, PreparedPrompt } from "../agent-bridge/protocol.ts";
 import { createAudioTranscriptionTool } from "../audio-transcription/index.ts";
-import { BotInbox, type BotSubmission } from "../bot/inbox.ts";
-import { BOT_MESSAGE_TYPE, getBotTurnId, getMessageText, type PendingBotTurn, preparePrompt } from "../bot/messages.ts";
-import { agentSnapshot, availableModels } from "../bot/status.ts";
+import { handleBotRequest } from "../bot/controls.ts";
+import { BotDelivery } from "../bot/delivery.ts";
+import { preparePrompt } from "../bot/messages.ts";
 import { registerBotTools, type ToolConnection } from "../bot/tools.ts";
 
 interface Factories {
@@ -41,7 +36,6 @@ const defaults: Factories = {
   createClient: (options) => new BridgeClient(options),
   prepare: preparePrompt,
 };
-const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 const localPath = (path: string, cwd: string): string =>
   resolve(cwd, path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : path === "~" ? homedir() : path);
 
@@ -128,13 +122,12 @@ class ManagedSession {
   private unsubscribe?: () => void;
   private extensionsBound = false;
   private readonly lifetime = new AbortController();
-  private readonly preparations = new Map<string, AbortController>();
-  private readonly waiting = new Set<string>();
   private readonly operations = new Set<Promise<unknown>>();
   private mutating = false;
-  private activeTurn?: string;
-  private assistantError?: string;
-  private readonly inbox: BotInbox;
+  private readonly delivery: BotDelivery;
+  private get inbox() {
+    return this.delivery.inbox;
+  }
 
   constructor(
     private readonly target: SessionTarget,
@@ -142,18 +135,22 @@ class ManagedSession {
     private readonly factories: Factories,
     private readonly removed: () => void,
   ) {
-    this.inbox = new BotInbox({
+    this.delivery = new BotDelivery({
+      current: () => this.current(),
+      prepare: this.factories.prepare,
       ready: () =>
-        this.current() &&
         !this.mutating &&
         !!this.session &&
         !this.session.isCompacting &&
         (this.session.isStreaming || this.session.isIdle),
-      submit: (turn, _ctx, submission) => this.track(this.submit(turn, submission)),
+      send: (message) => {
+        if (!this.session) throw new Error("Pi session is not ready");
+        return this.session.sendCustomMessage(message, { triggerTurn: true, deliverAs: "steer" });
+      },
+      output: (event) => this.output(event),
+      track: (operation) => this.track(operation),
       changed: () => {},
-      failed: (turn, _ctx, error) => this.deliveryError(turn.id, error),
     });
-    this.inbox.pause();
   }
 
   matches(target: SessionTarget): boolean {
@@ -177,10 +174,6 @@ class ManagedSession {
   }
   private output(event: AgentOutput): void {
     if (this.current()) this.client?.output(event);
-  }
-  private deliveryError(id: string, error: unknown): void {
-    this.waiting.delete(id);
-    this.output({ type: "delivery-error", turnId: id, error: errorText(error) });
   }
   private track<T>(operation: Promise<T>): Promise<T> {
     this.operations.add(operation);
@@ -348,99 +341,17 @@ class ManagedSession {
   }
 
   private receive(prompt: PreparedPrompt): void {
-    if (!this.current() || !this.session) return;
-    if (this.waiting.has(prompt.id) || this.activeTurn === prompt.id) {
-      this.output({ type: "delivery-error", turnId: prompt.id, error: "Duplicate bot turn ID" });
-      return;
-    }
-    const slot = this.inbox.reserve(this.session.extensionRunner.createContext());
-    const controller = new AbortController();
-    this.preparations.set(prompt.id, controller);
-    this.waiting.add(prompt.id);
-    this.track(
-      (async () => {
-        try {
-          const turn = await this.factories.prepare(prompt, controller.signal);
-          if (controller.signal.aborted || !this.current()) {
-            slot.cancel();
-            return;
-          }
-          slot.complete(turn);
-        } catch (error) {
-          slot.cancel();
-          if (!controller.signal.aborted) this.deliveryError(prompt.id, error);
-        } finally {
-          if (this.preparations.get(prompt.id) === controller) this.preparations.delete(prompt.id);
-        }
-      })(),
-    );
-  }
-  private async submit(turn: PendingBotTurn, submission: BotSubmission): Promise<void> {
-    const session = this.session;
-    if (!session) throw new Error("Pi session is not ready");
-    const ctx = session.extensionRunner.createContext();
-    const current = (): boolean => submission.isCurrent() && this.current();
-    if (!current()) return;
-    if (!ctx.model) throw new Error("No model selected for Pi session");
-    const authenticated =
-      ctx.modelRegistry.hasConfiguredAuth(ctx.model) ||
-      (await ctx.modelRegistry.getProviderAuth(ctx.model.provider)) !== undefined;
-    if (!current()) return;
-    if (!authenticated) throw new Error(`No API key found for ${ctx.model.provider}`);
-    let pending: Promise<void> | undefined;
-    submission.emit(() => {
-      pending = session.sendCustomMessage(
-        { customType: BOT_MESSAGE_TYPE, content: turn.content, display: true, details: { turnId: turn.id } },
-        { triggerTurn: true, deliverAs: "steer" },
-      );
-    });
-    if (pending) {
-      try {
-        await this.track(pending);
-      } catch (error) {
-        if (this.current() && this.activeTurn === turn.id) {
-          this.output({ type: "settled", error: errorText(error) });
-          this.activeTurn = undefined;
-        }
-        throw error;
-      }
-    }
+    if (!this.session) return;
+    this.track(this.delivery.receive(prompt, this.session.extensionRunner.createContext()));
   }
 
   private onEvent(event: AgentSessionEvent): void {
     if (!this.current() || !this.session) return;
     const ctx = this.session.extensionRunner.createContext();
-    if (event.type === "message_start") {
-      const turn = this.inbox.take(event.message, ctx);
-      if (turn) {
-        this.waiting.delete(turn.id);
-        this.activeTurn = turn.id;
-        this.assistantError = undefined;
-        this.output({ type: "turn-start", turnId: turn.id });
-      } else if (this.activeTurn && (event.message.role === "user" || event.message.role === "custom")) {
-        if (getBotTurnId(event.message) !== this.activeTurn) {
-          this.output({ type: "settled" });
-          this.activeTurn = undefined;
-          this.assistantError = undefined;
-        }
-      } else if (this.activeTurn && event.message.role === "assistant") {
-        this.assistantError = undefined;
-        this.output({ type: "text-start" });
-      }
-    } else if (event.type === "message_update" && this.activeTurn && event.message.role === "assistant") {
-      this.output({ type: "text-update", text: getMessageText(event.message) });
-    } else if (event.type === "message_end" && this.activeTurn && event.message.role === "assistant") {
-      this.assistantError =
-        event.message.stopReason === "error" || event.message.stopReason === "aborted"
-          ? event.message.errorMessage || "Pi turn failed or was aborted"
-          : undefined;
-      this.output({ type: "text-end", text: getMessageText(event.message), error: this.assistantError });
-    } else if (event.type === "agent_settled") {
-      if (this.activeTurn) this.output({ type: "settled", error: this.assistantError });
-      this.activeTurn = undefined;
-      this.assistantError = undefined;
-      this.inbox.rejectUnacknowledged(ctx);
-    }
+    if (event.type === "message_start") this.delivery.messageStart(event.message, ctx);
+    else if (event.type === "message_update") this.delivery.messageUpdate(event.message, ctx);
+    else if (event.type === "message_end") this.delivery.messageEnd(event.message, ctx);
+    else if (event.type === "agent_settled") this.delivery.agentSettled(ctx);
     this.inbox.schedule(ctx);
   }
 
@@ -448,57 +359,48 @@ class ManagedSession {
     if (!this.current() || !this.session) throw new Error("Pi session is closed");
     const session = this.session;
     const ctx = session.extensionRunner.createContext();
-    v.parse(AgentOperationBodies[request.operation], request.body);
-    if (request.operation === "snapshot") return agentSnapshot({ getThinkingLevel: () => session.thinkingLevel }, ctx);
-    if (request.operation === "newSession") return false;
-    if (request.operation === "abort") {
-      if (session.isIdle && !this.waiting.size && !this.mutating) return false;
-      this.cancelIncoming("Bot input cancelled");
-      session.clearQueue();
-      await session.abort();
-      if (this.current()) this.inbox.resume(ctx);
-      return true;
-    }
-    if (!session.isIdle || this.mutating) {
-      if (request.operation === "setThinking") throw new Error("Pi is busy. Wait for the current turn to finish.");
-      return false;
-    }
-    this.mutating = true;
-    try {
-      switch (request.operation) {
-        case "setModel": {
-          const body = v.parse(AgentOperationBodies.setModel, request.body);
-          const model = availableModels(ctx).find((model) => model.provider === body.provider && model.id === body.id);
-          if (!model) return false;
-          await session.setModel(model);
-          return true;
+    return handleBotRequest(request, {
+      ctx,
+      busy: () => this.mutating || session.isCompacting,
+      getThinkingLevel: () => session.thinkingLevel,
+      setThinkingLevel: (level) => {
+        session.setThinkingLevel(level);
+        return session.thinkingLevel;
+      },
+      setModel: async (model) => {
+        await session.setModel(model);
+        return true;
+      },
+      compact: async () => {
+        await session.compact();
+        return true;
+      },
+      mutate: async (operation) => {
+        this.mutating = true;
+        try {
+          return await operation();
+        } finally {
+          this.mutating = false;
+          if (this.current()) this.inbox.schedule(ctx);
         }
-        case "setThinking": {
-          const body = v.parse(AgentOperationBodies.setThinking, request.body);
-          session.setThinkingLevel(body.level);
-          return session.thinkingLevel;
-        }
-        case "compact":
-          await session.compact();
-          return true;
-      }
-    } finally {
-      this.mutating = false;
-      if (this.current()) this.inbox.schedule(ctx);
-    }
+      },
+      abort: async () => {
+        const pending = this.delivery.cancelPending(ctx);
+        const running = !session.isIdle || this.mutating;
+        session.clearQueue();
+        await session.abort();
+        if (this.current()) this.inbox.resume(ctx);
+        return pending || running;
+      },
+      newSession: () => false,
+    });
   }
 
-  private cancelIncoming(reason: string): void {
-    for (const id of this.waiting) this.deliveryError(id, new Error(reason));
-    for (const controller of this.preparations.values()) controller.abort();
-    this.inbox.stop();
-  }
   close(): Promise<void> {
     if (this.closing) return this.closing;
     this.stopped = true;
     this.lifetime.abort();
-    this.cancelIncoming("Pi session closed");
-    this.activeTurn = undefined;
+    this.delivery.stop();
     this.unsubscribe?.();
     // Defer side effects until the shared close promise is installed: disconnect
     // can synchronously call onDisconnect, including during a failed handshake.

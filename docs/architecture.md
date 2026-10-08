@@ -17,7 +17,9 @@ src/agent-bridge/
 
 src/bot/
   index.ts           Pi registration
-  session-adapter.ts Pi session lifecycle and agent capability implementation
+  session-adapter.ts visible Pi attachment lifecycle
+  delivery.ts        shared preparation, preflight, acknowledgement, cancellation and output attribution
+  controls.ts        shared reverse-RPC validation, model selection and busy policy
   inbox.ts           ordered Pi submission and message_start acknowledgement
   messages.ts        prepared files to Pi content; Pi messages to plain text
   status.ts          Pi model, thinking, usage, and context snapshots
@@ -48,7 +50,7 @@ Uncertain message-creation outcomes are not automatically resent. Explicit rate-
 
 ## Input lifecycle
 
-The daemon reserves arrival positions before downloads, transcription, or album debounce. Prepared prompts leave in FIFO order. Controls and picker callbacks use a separate lane, so stop remains available during preparation.
+The daemon reserves arrival positions before downloads, transcription, or album debounce. Prepared prompts leave in FIFO order. Controls and picker callbacks use a separate lane, so stop remains available during preparation. Both native and visible Pi hosts use the same delivery controller; `/stop` cancels queued preparation and authentication even while Pi is idle, fences late completions, and still allows fresh input.
 
 Pi submits prepared prompts as SDK custom messages with opaque turn IDs in validated details. This bypasses input-hook text transformations. Before submission, asynchronous preflight checks model/auth availability and attachment identity. `message_start` acknowledges the matching ID; preflight failure or settlement without acknowledgement reports a delivery error and releases the FIFO without blindly retrying. The SDK send is fire-and-forget, not an acknowledgement. During streaming, input uses steering. During compaction or other non-streaming busy states, input waits; outcome hooks schedule delivery after Pi clears its busy state.
 

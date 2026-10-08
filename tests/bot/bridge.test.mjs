@@ -358,9 +358,33 @@ test("slow image preparation preserves FIFO without blocking reverse abort or sn
   assert.equal(await h.backend("abort"), true); assert.equal(aborted, true);
   assert.equal((await h.backend("snapshot")).idle, false); assert.deepEqual(h.submissions, []);
   gate.resolve(); await nextTick();
-  assert.deepEqual(h.texts(), ["[telegram] first"]); await h.acknowledge(); await h.tick();
-  assert.deepEqual(h.texts(), ["[telegram] first", "[telegram] second"]);
+  assert.deepEqual(h.texts(), []);
+  assert.deepEqual(h.client.outputs.map((event) => event.turnId), ["p1", "p2"]);
+  h.setIdle(true); await h.emit("agent_settled");
+  h.receive(prompt("fresh", "fresh")); await nextTick(); await h.acknowledge();
+  assert.deepEqual(h.texts(), ["[telegram] fresh"]);
 });
+
+for (const phase of ["preparation", "authentication"]) {
+  test(`stop cancels ${phase} while Pi is idle, fences late completion, and permits fresh input`, async (t) => {
+    const gate = deferred(); let signal;
+    const h = harness(t, phase === "preparation" ? { prepare: (value, preparationSignal) => {
+      if (value.id !== "p1") return Promise.resolve({ id: value.id, content: value.content });
+      signal = preparationSignal; return gate.promise;
+    } } : {});
+    await h.start();
+    if (phase === "authentication") h.ctx.modelRegistry.getProviderAuth = () => gate.promise;
+    h.receive(prompt("cancel me")); await nextTick();
+    assert.equal(await h.backend("abort"), true);
+    if (signal) assert.equal(signal.aborted, true);
+    h.ctx.modelRegistry.getProviderAuth = async () => auth;
+    gate.resolve(phase === "preparation" ? { id: "p1", content: prompt("cancel me").content } : auth);
+    await nextTick(); await h.tick(); assert.deepEqual(h.submissions, []);
+    assert.deepEqual(h.client.outputs, [{ type: "delivery-error", turnId: "p1", error: "Bot input cancelled" }]);
+    h.receive(prompt("fresh", "fresh")); await nextTick(); await h.acknowledge();
+    assert.deepEqual(h.texts(), ["[telegram] fresh"]);
+  });
+}
 
 test("failed preparation and rejected Pi submission report generic delivery-error and release FIFO positions", async (t) => {
   const h = harness(t, { prepare: async (value) => {
@@ -605,7 +629,7 @@ test("existing standalone transcription registration remains untouched and provi
 });
 
 test("Pi package boundary imports only portable bridge client/protocol and the entrypoint stays thin", async () => {
-  for (const file of ["session-adapter", "inbox", "messages", "status", "tools", "index"]) {
+  for (const file of ["session-adapter", "controls", "delivery", "inbox", "messages", "status", "tools", "index"]) {
     const source = await readFile(new URL(`../../src/bot/${file}.ts`, import.meta.url), "utf8");
     assert.doesNotMatch(source, /from ["'][^"']*(?:telegram\/|schemas\.ts|preview\.ts|pickers\.ts|server\.ts|store\.ts)["']/);
     assert.doesNotMatch(source, /fetch\(|getUpdates|botToken|media_group_id|callback_query|sendChatAction/);
