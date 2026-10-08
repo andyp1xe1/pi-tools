@@ -65,11 +65,31 @@ in {
     telegram = lib.mkOption {
       type = lib.types.submodule {
         options = {
-          enable = lib.mkEnableOption "the vendored pi Telegram bridge";
+          enable = lib.mkEnableOption "Pi session attachment commands for the Telegram daemon";
         };
       };
       default = {};
-      description = "Telegram bridge integration.";
+      description = "Pi session attachment to the agent-bridge daemon.";
+    };
+
+    agentBridge = lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = cfg.telegram.enable;
+            description = "Install the Bun agent-bridge CLI. Defaults to telegram.enable.";
+          };
+          package = lib.mkOption {
+            type = lib.types.package;
+            default = self.packages.${pkgs.stdenv.hostPlatform.system}.agent-bridge;
+            defaultText = lib.literalExpression "inputs.pi-tools.packages.\${pkgs.stdenv.hostPlatform.system}.agent-bridge";
+            description = "Agent bridge CLI package.";
+          };
+        };
+      };
+      default = {};
+      description = "Daemon-owned Telegram bot and local Pi session attachment.";
     };
 
     browserCli = lib.mkOption {
@@ -142,7 +162,8 @@ in {
 
   config = lib.mkIf cfg.enable {
     home.packages =
-      lib.optional cfg.browserCli.enable cfg.browserCli.package
+      lib.optional cfg.agentBridge.enable cfg.agentBridge.package
+      ++ lib.optional cfg.browserCli.enable cfg.browserCli.package
       ++ lib.optional (cfg.piCliPackage != null) cfg.piCliPackage
       ++ lib.optional cfg.audioTranscription.enable cfg.audioTranscription.package;
 

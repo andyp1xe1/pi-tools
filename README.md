@@ -19,7 +19,8 @@
 | `nix-env-feedback`    | Detects missing commands in bash output. Adds `/cmdstats`.             | [Nix environment feedback](docs/nix-env-feedback.md) |
 | `latex-renderer`      | Renders block LaTeX as images in pi.                                   | [LaTeX renderer](docs/latex-renderer.md)             |
 | `pi-pkm`              | Displays tasks from the builtin, todo.txt, and Emacs agenda providers. | [Pi PKM](docs/pi-pkm.md)                             |
-| `telegram`            | Connects a Telegram chat to a pi session.                              | [Telegram bridge](docs/telegram.md)                  |
+| `telegram`            | Attaches the current Pi conversation to the bot daemon.                              | [Telegram bridge](docs/telegram.md)                  |
+| `agent-bridge`        | Maps project topics and conversation threads to Pi sessions. | [Agent bridge](docs/agent-bridge/telegram.md) |
 | `browser-cli`         | Measures pages and interacts with Chrome through a local CLI.          | [Browser CLI](docs/browser-cli.md)                   |
 
 The `nixos-dev-shells`, `btca-local`, `linear-cli`, and [`browser-cli`](skills/browser-cli/SKILL.md) skills live in `skills/`.
@@ -77,11 +78,12 @@ npm install
 npm run check
 npm run fix
 npm run test:browser-cli
-npm run test:telegram
+npm run test:agent-bridge
+npm run test:bot
 npm run test:extensions
 ```
 
-Every extension is a thin `extensions/<name>.ts` entrypoint calling a named registration function in `src/<name>/index.ts`. Implementations and reusable helpers live under `src/`. See [Code boundaries and Telegram lifecycle](docs/architecture.md).
+Every extension is a thin entrypoint calling a named registration function. The standalone daemon and Telegram infrastructure live in `src/agent-bridge/`; Pi integration lives in `src/bot/`, reached through `extensions/telegram.ts`. Their boundary is a portable, validated IPC client/protocol, not shared Pi or Telegram execution code. See [Code boundaries and Telegram lifecycle](docs/architecture.md).
 
 Run either extension without a session or network access:
 
@@ -92,6 +94,6 @@ pi --no-session --no-tools --offline -e ./extensions/latex-renderer.ts -p /latex
 
 ## Attribution and license
 
-- [Telegram bridge attribution](src/telegram/NOTICE.md)
+- [Telegram bridge attribution](src/agent-bridge/telegram/NOTICE.md)
 - [`btca-local` source](https://github.com/davis7dotsh/better-context/blob/main/skills/btca-local/SKILL.md)
 - [GPL-3.0 license](LICENSE)

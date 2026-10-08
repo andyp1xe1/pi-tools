@@ -10,5 +10,6 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["extensions/**/*.ts", "src/**/*.ts"]
+  "include": ["extensions/**/*.ts", "src/**/*.ts"],
+  "exclude": ["src/agent-bridge"]
 }
