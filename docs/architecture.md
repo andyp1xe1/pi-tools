@@ -1,48 +1,67 @@
 # Code boundaries
 
-Every pi extension uses the same structure:
+Extension entrypoints under `extensions/` only call named registration functions. Implementations and reusable helpers live under `src/`; importing them does not register an extension.
 
-- `extensions/<name>.ts`: pi's default-export entrypoint, with an explicit `register…(pi)` call. No business logic or background work.
-- `src/<name>/index.ts`: named registration function connecting tools, commands, and lifecycle handlers to the implementation.
-- `src/<name>/`: implementation and reusable helpers. Import these modules directly when building other integrations; importing them does not register an extension.
-- `tests/`: behavior tests and entrypoint/registration smoke tests.
+## Bot infrastructure and Pi integration
 
-Registration may live in `src/`, but it is always invoked visibly from `extensions/`. Avoid putting implementations back into entrypoints or hiding registration behind default re-exports.
+```text
+src/agent-bridge/
+  daemon.ts          Bun CLI lifecycle and the sole Telegram poller
+  server.ts          Node-compatible private IPC, ownership, cancellation and reverse RPC
+  frontend.ts        injected agent capabilities and conversation frontend boundary
+  protocol.ts        runtime-neutral validated contracts
+  client.ts          portable IPC and active transcription backend registration
+  config.ts          private environment loading, data-path preparation and daemon config
+  telegram/          Telegram authorization, routing, HTTP, media, menus and streaming
+  store.ts           project/conversation/session associations and durable reply outbox
 
-## Telegram lifecycle
+src/bot/
+  index.ts           Pi registration
+  session-adapter.ts visible Pi attachment lifecycle
+  delivery.ts        shared preparation, preflight, acknowledgement, cancellation and output attribution
+  controls.ts        shared reverse-RPC validation, model selection and busy policy
+  inbox.ts           ordered Pi submission and message_start acknowledgement
+  messages.ts        prepared files to Pi content; Pi messages to plain text
+  status.ts          Pi model, thinking, usage, and context snapshots
+  tools.ts           thin Pi tool wrappers around the IPC client
+```
 
-The bridge composes three responsibilities, protected by one connection owner:
+`extensions/bot.ts` calls `registerBot()` for optional visible-session attachments. The CLI composition root injects `src/pi-backend/index.ts`: independent native SDK sessions with explicit `agent.toolExecution = "parallel"`, normal JSONL/auth/resources, and per-session bridge tools. Runtime-neutral daemon/IPC infrastructure does not import the SDK or `src/bot/`. The IPC server receives a frontend implementation rather than importing Telegram or SQLite. The Pi integration imports only `agent-bridge/client.ts` and `agent-bridge/protocol.ts`, never the daemon, SQLite, or Telegram HTTP helpers. Boundary tests enforce those dependencies.
 
-### Connection ownership
+Channels/topics bind to project directories; group reply-chain conversations bind to saved agent sessions. The existing `task_<id>` conversation identifiers preserve history rather than introducing a separate task lifecycle. Live attachments are keyed by conversation route, not owner. Group attachment validates Pi's canonical working directory and current project binding. Owners authorize attachment and controls; they are not the session routing key. Bound DMs also receive managed conversations; explicit visible-session owner DMs use separate routes. The running daemon always has a native session backend; visible attachments are optional routes within that same daemon, not a second manual-only operating mode. Recognized Telegram commands have the same meaning with or without a visible attachment. Managed startup is single-flight per route, not serialized per project; opaque startup tokens fence in-flight attachment after release/unbind. No process workers, session caps, sandboxing, or automatic worktrees are added.
 
-`connection.ts` acquires a per-bot OS socket before polling, registering commands, or writing connection configuration. A second local session refuses to connect. Ownership is released after polling and in-flight output stop. Linux abstract sockets and Windows pipes release even on a process crash; other platforms may require removing a stale filesystem socket after a crash.
+## IPC contract
 
-This is a local lock, not a distributed lease. A Telegram HTTP 409 conflict from another machine stops polling rather than entering a reconnect fight.
+The daemon sends prepared prompts: opaque turn IDs, text, and absolute image-file paths. Image bytes do not travel in JSON; Pi reads the local files into its image content type.
 
-### Incoming messages
+Pi implements agent capabilities through reverse RPC: snapshot, model selection, thinking selection, abort, compaction, and new session. The daemon renders Telegram commands and menus using those capabilities. It does not receive model credentials or invoke Pi APIs.
 
-`inbox.ts` keeps one FIFO of prepared Telegram turns. Only one submission may await acknowledgement at a time. `message_start` for the matching user message acknowledges delivery and supplies its chat/reply metadata.
+Pi sends normalized turn-start, text-start, text-update, text-end, settled, and delivery-error events. Telegram chat IDs, message IDs, albums, callback queries, and wire API methods stay inside the daemon. Agent tools request attachment delivery or transcription, not arbitrary Telegram API calls; the frontend chooses the attached conversation's recipient and reply anchor.
 
-Pi's `sendUserMessage()` is fire-and-forget: its return is not an acknowledgement. The inbox retains a submitted item until pi starts it. Asynchronous preflight errors are reported by pi; the bridge must not blindly resubmit an unacknowledged item and risk duplicates.
+Both directions validate bounded NDJSON frames. Tool cancellation carries a request ID and aborts that daemon request. Detach aborts the attachment's requests and frontend work. Long transcription cannot block control messages or reverse RPC replies. Large tool transcripts use a private local file rather than an oversized frame.
 
-During compaction or other non-streaming busy states, messages wait. Compaction outcome hooks schedule delivery, never submit within the hook: pi may still have its compaction controller set. During an active agent run, new messages use steering.
+## Telegram ownership
 
-Disconnect pauses the inbox; reconnecting that session resumes pending messages. Session shutdown clears this in-memory queue. It is not a durable inbox across process exits.
+The daemon holds a per-bot OS lock before polling or registering commands. Token rotation does not create a second identity. This is a local lock, not a distributed lease: HTTP 409 from another machine stops polling. The daemon refuses configured webhooks.
 
-### Assistant output
+`telegram/schemas.ts` validates Telegram wire values. `api.ts` handles HTTP, timeouts, and redacted failures; `client.ts` handles media, safe retries and conversation-bound destination/cancellation guards using the real transport. `telegram/frontend.ts` owns Telegram dispatch, authorization, conversation/session composition and outbox delivery. It maps group/forum mentions, bound DMs, and reply chains to generic project/conversation records and connects live sessions. A tracked reply continues its conversation even when the bot is mentioned again. Only explicitly bound chats/topics are active. `/new` creates another conversation; command scoping is separate from ordinary routing.
 
-`preview.ts` maps each assistant message to stable Telegram messages:
+Uncertain message-creation outcomes are not automatically resent. Explicit rate-limit rejections can retry. The durable reply outbox becomes non-retryable before publication, so a crash or failed local result commit cannot automatically duplicate that reply. A crash before publication can instead leave an acknowledgement missing; streamed replies use their separate frontend queue.
 
-1. `message_start` opens an output state.
-2. `message_update` coalesces streamed text and schedules throttled sends/edits.
-3. `message_end` queues the final edit and closes that state.
+## Input lifecycle
 
-All output operations are serialized, including across assistant messages. Closing a state cancels stale scheduled updates but waits for any in-flight send. Replies exceeding Telegram's limit stream into additional bubbles without replacing existing ones.
+The daemon reserves arrival positions before downloads, transcription, or album debounce. Prepared prompts leave in FIFO order. Controls and picker callbacks use a separate lane, so stop remains available during preparation. Both native and visible Pi hosts use the same delivery controller; `/stop` cancels queued preparation and authentication even while Pi is idle, fences late completions, and still allows fresh input.
 
-Only text blocks are forwarded. Commentary/planning text is visible; internal thinking and tool results are not. Aborted partial replies remain in place. Ephemeral drafts, blank messages, and artificial “…” placeholders are not used.
+Pi submits prepared prompts as SDK custom messages with opaque turn IDs in validated details. This bypasses input-hook text transformations. Before submission, asynchronous preflight checks model/auth availability and attachment identity. `message_start` acknowledges the matching ID; preflight failure or settlement without acknowledgement reports a delivery error and releases the FIFO without blindly retrying. The SDK send is fire-and-forget, not an acknowledgement. During streaming, input uses steering. During compaction or other non-streaming busy states, input waits; outcome hooks schedule delivery after Pi clears its busy state.
 
-### Activity
+Acknowledgement sends the opaque turn ID back to the daemon, which owns its reply route. Chat/topic scope is fixed for the conversation, but each assistant message captures the current input's reply target. Streamed bubbles and turn-time uploads reply to that input, not the conversation root; uploads outside a bot turn have no stale reply anchor. Detach clears queued prompts and route mappings. Already submitted Pi input may settle locally, but cannot publish through a later attachment. Unrelated terminal or extension input ends the bot's reply attribution before subsequent assistant output. Neither inbox is crash-durable.
 
-`agent_start` enables steering and abort control. Acknowledged Telegram turns start the typing indicator. `agent_settled` stops typing and releases turn metadata; it does not rebuild or resend assistant text. Terminal errors are announced after retries finish.
+Successful connection intent retains the selected route and owner in validated Pi process memory. DM intent follows `/new`, `/resume`, `/fork`, and `/reload`. A saved group session can reconnect after reload, but another session cannot silently replace its durable association. The owner explicitly releases a group conversation before attaching a replacement. Handoff waits for in-flight Pi mutations and acknowledged daemon release. Explicit disconnect, quit, attachment failure, or unexpected socket closure clears intent; no reconnect loop runs.
 
-Polling, pi execution, and Telegram message completion are distinct lifecycles. Keep them distinct when adding new integrations.
+## Output lifecycle
+
+Pi extracts only text blocks; thinking and tool results stay private. The daemon owns `telegram/preview.ts`, which coalesces streamed text into stable messages, throttles edits, and appends bubbles at Telegram's length limit. Its output queue spans assistant messages. Aborted partial replies remain visible; no blank or placeholder messages are sent.
+
+The daemon starts typing after a turn acknowledgement and stops at settlement or detach. Settlement does not rebuild or resend final text. Polling, agent execution, and Telegram delivery remain separate lifecycles.
+
+Whisper execution is shared through the runtime-neutral `audio-transcription/whisper.ts` helper. The portable bridge client owns registration/capture of the active transcription backend; no audio-extension module owns another feature's attachment state. One shared audio tool delegates to that captured backend when attached and uses local execution when detached. Registration happens against Pi's live tool inventory, after session handoff completes.
