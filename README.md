@@ -19,7 +19,7 @@
 | `nix-env-feedback`    | Detects missing commands in bash output. Adds `/cmdstats`.             | [Nix environment feedback](docs/nix-env-feedback.md) |
 | `latex-renderer`      | Renders block LaTeX as images in pi.                                   | [LaTeX renderer](docs/latex-renderer.md)             |
 | `pi-pkm`              | Displays tasks from the builtin, todo.txt, and Emacs agenda providers. | [Pi PKM](docs/pi-pkm.md)                             |
-| `telegram`            | Attaches the current Pi conversation to the bot daemon.                              | [Telegram bridge](docs/telegram.md)                  |
+| `bot`                 | Attaches the current Pi conversation to the bot daemon.                              | [Bot integration](docs/bot.md)                       |
 | `agent-bridge`        | Maps project topics and conversation threads to Pi sessions. | [Agent bridge](docs/agent-bridge/telegram.md) |
 | `browser-cli`         | Measures pages and interacts with Chrome through a local CLI.          | [Browser CLI](docs/browser-cli.md)                   |
 
@@ -52,7 +52,7 @@ imports = [ inputs.pi-tools.homeManagerModules.default ];
 programs.pi-tools = {
   enable = true;
   piCliPackage = inputs.llm-agents.packages.${pkgs.stdenv.hostPlatform.system}.pi;
-  telegram.enable = true;
+  bot.enable = true;
   audioTranscription.enable = true;
 };
 ```
@@ -61,7 +61,7 @@ With `programs.pi-tools.enable = true`, the module adds the Nix-built `browser-c
 
 Set `programs.pi-tools.browserCli.enable = false;` to omit the CLI, its skill, and Playwright. This selects `packages.<system>.without-browser-cli`. Set `programs.pi-tools.browserCli.package` to use a different CLI build. The default is `packages.<system>.browser-cli`. The old `browserCheck` option still works and warns to use `browserCli`.
 
-The module also writes pi settings and installs `piCliPackage` if supplied. The `telegram` and `audioTranscription` options are off unless enabled.
+The module also writes pi settings and installs `piCliPackage` if supplied. The `bot` and `audioTranscription` options are off unless enabled.
 
 The CLI now defaults to `$XDG_DATA_HOME/browser-cli` or `~/.local/share/browser-cli`. It does not migrate existing data. See [rename and data compatibility](docs/browser-cli.md#rename-and-data-compatibility) before reusing old profiles. Activate the updated Home Manager generation to put the renamed executable on `PATH`. For a source checkout, rerun `npm link`. Reload Pi to discover the renamed skill.
 
@@ -83,7 +83,7 @@ npm run test:bot
 npm run test:extensions
 ```
 
-Every extension is a thin entrypoint calling a named registration function. The standalone daemon and Telegram infrastructure live in `src/agent-bridge/`; Pi integration lives in `src/bot/`, reached through `extensions/telegram.ts`. Their boundary is a portable, validated IPC client/protocol, not shared Pi or Telegram execution code. See [Code boundaries and Telegram lifecycle](docs/architecture.md).
+Every extension is a thin entrypoint calling a named registration function. The standalone daemon and Telegram infrastructure live in `src/agent-bridge/`; Pi integration lives in `src/bot/`, reached through `extensions/bot.ts`. Their boundary is a portable, validated IPC client/protocol, not shared Pi or Telegram execution code. See [Code boundaries and bridge lifecycle](docs/architecture.md).
 
 Run either extension without a session or network access:
 

@@ -10,7 +10,7 @@ const extensions = [
   ["latex-renderer", "registerLatexRenderer", ["render_latex"]],
   ["nix-env-feedback", "registerNixEnvFeedback", []],
   ["pi-pkm", "registerPiPkm", []],
-  ["telegram", "registerBot", ["telegram_attach"], "bot"],
+  ["bot", "registerBot", ["bot_attach"], "bot"],
 ];
 
 function registry() {
@@ -37,7 +37,7 @@ function registry() {
     bound = true;
     const ctx = {
       cwd: process.cwd(), isIdle: () => true,
-      ui: { setStatus() {} }, sessionManager: { getSessionId: () => "audio-test" },
+      ui: { theme: { fg: (_color, text) => text }, setStatus() {} }, sessionManager: { getSessionId: () => "audio-test" },
     };
     for (const handler of handlers.get("session_start") ?? []) await handler({ reason: "startup" }, ctx);
   };
@@ -56,10 +56,10 @@ test("every extension is a thin, explicit entrypoint into its source module", as
 });
 
 for (const [local, order] of [
-  [true, ["audio-transcription", "telegram"]],
-  [true, ["telegram", "audio-transcription"]],
-  [false, ["audio-transcription", "telegram"]],
-  [false, ["telegram", "audio-transcription"]],
+  [true, ["audio-transcription", "bot"]],
+  [true, ["bot", "audio-transcription"]],
+  [false, ["audio-transcription", "bot"]],
+  [false, ["bot", "audio-transcription"]],
 ]) {
   test(`one transcription registration (${local ? "local Whisper" : "remote-only"}) for extension load order: ${order.join(" then ")}`, async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "pi-load-order-"));
@@ -83,11 +83,11 @@ for (const [local, order] of [
     await h.start();
     await h.start(); // repeated starts must not duplicate a definition
     assert.equal(h.registrations.filter(([method, name]) => method === "registerTool" && name === "transcribe_audio").length, 1);
-    assert.deepEqual([...h.tools.keys()].sort(), ["telegram_attach", "transcribe_audio"]);
+    assert.deepEqual([...h.tools.keys()].sort(), ["bot_attach", "transcribe_audio"]);
   });
 }
 
-test("entrypoints preserve source registrations and existing tool names", async (t) => {
+test("entrypoints preserve source registrations and canonical tool names", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "pi-entrypoints-"));
   await writeFile(join(directory, "whisper"), "#!/bin/sh\nexit 0\n");
   await chmod(join(directory, "whisper"), 0o755);

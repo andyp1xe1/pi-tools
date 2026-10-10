@@ -37,6 +37,9 @@
   oldCustom = evaluate { browserCheck.package = custom; };
   newCustom = evaluate { browserCli.package = custom; };
   merged = evaluate { browserCheck.enable = false; browserCli.package = custom; };
+  botEnabled = evaluate { bot.enable = true; browserCli.enable = false; };
+  botSettings = builtins.fromJSON (builtins.unsafeDiscardStringContext botEnabled.home.file.".pi/agent/settings.json".text);
+  disabledSettings = builtins.fromJSON (builtins.unsafeDiscardStringContext disabled.home.file.".pi/agent/settings.json".text);
 in
 assert enabled.programs.pi-tools.browserCli.enable;
 assert enabled.programs.pi-tools.package == packages.default;
@@ -54,4 +57,9 @@ assert oldCustom.programs.pi-tools.browserCli.package == newCustom.programs.pi-t
 assert builtins.length oldCustom.warnings == 1;
 assert merged.home.packages == [];
 assert merged.programs.pi-tools.browserCli.package == custom;
+assert botEnabled.programs.pi-tools.agentBridge.enable;
+assert !(botEnabled.programs.pi-tools ? telegram);
+assert botEnabled.home.packages == [packages.agent-bridge];
+assert !(builtins.elem "!extensions/bot.ts" (lib.last botSettings.packages).extensions);
+assert builtins.elem "!extensions/bot.ts" (lib.last disabledSettings.packages).extensions;
 true

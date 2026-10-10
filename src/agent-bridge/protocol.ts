@@ -5,7 +5,7 @@ import * as v from "valibot";
 const identifier = v.pipe(v.string(), v.nonEmpty(), v.maxLength(128));
 const text = v.pipe(v.string(), v.nonEmpty());
 export const LocalPathSchema = v.pipe(text, v.check(isAbsolute, "An absolute local file path is required."));
-// Compatibility owner identity is opaque to IPC; transports validate its meaning.
+// Owner identity is opaque to IPC; transports validate its meaning.
 const userId = identifier;
 const integer = v.pipe(v.number(), v.integer(), v.minValue(0));
 export const ThinkingLevelSchema = v.picklist(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -89,6 +89,7 @@ export const ClientFrameSchema = v.variant("type", [
     routeId: v.optional(identifier),
     cwd: v.optional(LocalPathSchema),
     attachmentToken: v.optional(identifier),
+    sessionFile: v.optional(LocalPathSchema),
   }),
   v.object({ type: v.literal("status") }),
   v.object({ type: v.literal("stop") }),

@@ -45,10 +45,10 @@ test("runtime boundary tracing ignores only type-only dependencies", () => {
   import "./side-effect.ts";
   export * from "./reexport.ts";
   const later = import("./dynamic.ts");
-  const legacy = require("./legacy.ts");
+  const required = require("./required.ts");
  `;
  assert.deepEqual(importSpecs("fixture.ts", text, true), [
-  "./domain.ts", "./side-effect.ts", "./reexport.ts", "./dynamic.ts", "./legacy.ts",
+  "./domain.ts", "./side-effect.ts", "./reexport.ts", "./dynamic.ts", "./required.ts",
  ]);
 });
 

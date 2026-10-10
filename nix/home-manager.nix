@@ -8,7 +8,7 @@
 
   packagePath = "${cfg.package}";
   disabledExtensions =
-    lib.optional (!cfg.telegram.enable) "!extensions/telegram.ts"
+    lib.optional (!cfg.bot.enable) "!extensions/bot.ts"
     ++ lib.optional (!cfg.audioTranscription.enable) "!extensions/audio-transcription.ts";
   packageEntry =
     if disabledExtensions == []
@@ -62,10 +62,10 @@ in {
       description = "Default recommended pi package entries. Set to [] to disable them.";
     };
 
-    telegram = lib.mkOption {
+    bot = lib.mkOption {
       type = lib.types.submodule {
         options = {
-          enable = lib.mkEnableOption "Pi session attachment commands for the Telegram daemon";
+          enable = lib.mkEnableOption "Pi session attachment commands for the agent bridge";
         };
       };
       default = {};
@@ -77,8 +77,8 @@ in {
         options = {
           enable = lib.mkOption {
             type = lib.types.bool;
-            default = cfg.telegram.enable;
-            description = "Install the Bun agent-bridge CLI. Defaults to telegram.enable.";
+            default = cfg.bot.enable;
+            description = "Install the Bun agent-bridge CLI. Defaults to bot.enable.";
           };
           package = lib.mkOption {
             type = lib.types.package;
@@ -89,7 +89,7 @@ in {
         };
       };
       default = {};
-      description = "Daemon-owned Telegram bot and local Pi session attachment.";
+      description = "Agent bridge daemon and local Pi session attachment.";
     };
 
     browserCli = lib.mkOption {

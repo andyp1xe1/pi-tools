@@ -27,7 +27,7 @@ const clocks = new WeakSet();
 function harness(t, { prepare, Adapter = BotSessionAdapter, rejectAttach = false, pendingAttach = false } = {}) {
   if (!clocks.has(t)) { t.mock.timers.enable({ apis: ["setTimeout"] }); clocks.add(t); }
   const handlers = new Map(), commands = new Map(), tools = new Map();
-  const submissions = [], notifications = [], clients = [];
+  const submissions = [], notifications = [], clients = [], statuses = [];
   let idle = true, thinking = "off", currentModel = model;
   const ctx = {
     cwd: process.cwd(), isIdle: () => idle, abort: () => {}, waitForIdle: async () => {},
@@ -35,7 +35,7 @@ function harness(t, { prepare, Adapter = BotSessionAdapter, rejectAttach = false
     scopedModels: [], modelRegistry: { getAvailable: () => [model], isUsingOAuth: () => false, hasConfiguredAuth: () => false, getProviderAuth: async () => auth },
     get model() { return currentModel; }, getContextUsage: () => undefined,
     sessionManager: { getSessionId: () => "session", getSessionFile: () => "/fake/session.jsonl", getEntries: () => [] },
-    ui: { setStatus: () => {}, notify: (message) => notifications.push(message) },
+    ui: { theme: { fg: (color, text) => `<${color}>${text}</${color}>` }, setStatus: (key, text) => statuses.push({ key, text }), notify: (message) => notifications.push(message) },
   };
   const pi = {
     on: (name, fn) => handlers.set(name, fn), registerCommand: (name, value) => commands.set(name, value),
@@ -80,7 +80,7 @@ function harness(t, { prepare, Adapter = BotSessionAdapter, rejectAttach = false
   const command = (name, args = "") => commands.get(name).handler(args, ctx);
   const start = async () => { await emit("session_start", { reason: "startup" }); await command("bot-connect"); };
   const h = {
-    adapter, pi, ctx, handlers, commands, tools, clients, submissions, notifications, emit, command, start,
+    adapter, pi, ctx, handlers, commands, tools, clients, submissions, notifications, statuses, emit, command, start,
     get client() { return clients.at(-1); },
     receive: (value) => clients.at(-1).options.onPrompt(value),
     backend: (operation, body = {}) => clients.at(-1).options.onAgentRequest({ type: "agent-request", id: "r1", operation, body }),
@@ -100,6 +100,30 @@ function harness(t, { prepare, Adapter = BotSessionAdapter, rejectAttach = false
   t.after(async () => { for (const client of clients) client.closeGate?.resolve(); await emit("session_shutdown", { reason: "quit" }); });
   return h;
 }
+
+test("footer preserves themed connection, incoming, replying and error styling", async (t) => {
+  const h = harness(t);
+  await h.emit("session_start", { reason: "startup" });
+  assert.deepEqual(h.statuses.at(-1), { key: "bot", text: "<accent>bot</accent> <muted>disconnected</muted>" });
+  await h.command("bot-connect");
+  assert.equal(h.statuses.at(-1).text, "<accent>bot</accent> <success>connected</success>");
+  h.setIdle(false); h.receive(prompt("queued"));
+  assert.equal(h.statuses.at(-1).text, "<accent>bot</accent> <success>connected</success><muted> · 1 incoming</muted>");
+  h.setIdle(true); await h.tick(); await until(() => h.submissions.length === 1);
+  await h.acknowledge();
+  assert.equal(h.statuses.at(-1).text, "<accent>bot</accent> <accent>replying</accent>");
+  h.client.options.onDisconnect(new Error("daemon unavailable"));
+  assert.equal(h.statuses.at(-1).text, "<accent>bot</accent> <error>error</error> <muted>daemon unavailable</muted>");
+});
+
+test("footer shows connecting in the warning colour during the handshake", async (t) => {
+  const h = harness(t, { pendingAttach: true });
+  await h.emit("session_start", { reason: "startup" });
+  const connecting = h.command("bot-connect"); await until(() => h.clients.length === 1);
+  assert.equal(h.statuses.at(-1).text, "<accent>bot</accent> <warning>connecting</warning>");
+  h.client.attachGate.resolve(); await connecting;
+  assert.equal(h.statuses.at(-1).text, "<accent>bot</accent> <success>connected</success>");
+});
 
 for (const outcome of ["session_compact", "session_compact_failed"]) {
   test(`FIFO survives ${outcome} and waits for Pi's actual idle state`, async (t) => {
@@ -135,7 +159,7 @@ test("a spoofed terminal Telegram prefix never asserts bridge provenance in the 
   assert.deepEqual(spoofed, ordinary);
   assert.ok(spoofed.systemPrompt.startsWith(systemPrompt));
   assert.match(spoofed.systemPrompt, /Bot bridge extension is active/);
-  assert.match(spoofed.systemPrompt, /Use telegram_attach/);
+  assert.match(spoofed.systemPrompt, /Use bot_attach/);
   assert.doesNotMatch(spoofed.systemPrompt, /current user message came from the bot bridge/);
   assert.deepEqual(h.client.outputs, []);
 });
@@ -449,7 +473,7 @@ for (const reason of ["new", "resume", "fork", "reload"]) {
     oldClient.options.onPrompt(prompt("stale")); oldClient.options.onDisconnect(new Error("late closure"));
     await assert.rejects(oldClient.options.onAgentRequest({ operation: "abort", body: {} }), /attachment changed/);
     await assert.rejects(oldProvider({ path: "/must-not-read" }), /attachment changed/);
-    await assert.rejects(old.tools.get("telegram_attach").execute("old", { paths: ["/must-not-read"] }), /not attached/);
+    await assert.rejects(old.tools.get("bot_attach").execute("old", { paths: ["/must-not-read"] }), /not attached/);
     await old.emit("message_end", { message: assistant("private") });
     oldRelease(); await old.emit("session_shutdown", { reason: "quit" });
     assert.equal(Reflect.get(globalThis, INTENT).ownerId, "77");
@@ -616,7 +640,7 @@ test("tools normalize paths, preserve daemon defaults and cancellation, truncate
   const dir = await mkdtemp(join(tmpdir(), "bot-tool-")); t.after(() => rm(dir, { recursive: true, force: true }));
   h.ctx.cwd = dir; const path = join(dir, "audio.ogg"); await writeFile(path, "fake audio");
   const controller = new AbortController();
-  const attach = h.tools.get("telegram_attach"), transcribe = h.tools.get("transcribe_audio");
+  const attach = h.tools.get("bot_attach"), transcribe = h.tools.get("transcribe_audio");
   const attached = await attach.execute("tool", { paths: ["audio.ogg"] }, controller.signal, undefined, h.ctx);
   assert.deepEqual(attached.details.paths, [path]); assert.deepEqual(h.client.attachments, [{ body: { path, fileName: "audio.ogg" }, signal: controller.signal }]);
   assert.equal((await transcribe.execute("tool", { path: "@audio.ogg" }, controller.signal, undefined, h.ctx)).content[0].text, "daemon transcript");
@@ -648,7 +672,7 @@ test("Pi package boundary imports only portable bridge client/protocol and the e
     assert.doesNotMatch(source, /fetch\(|getUpdates|botToken|media_group_id|callback_query|sendChatAction/);
     for (const match of source.matchAll(/from ["']([^"']*agent-bridge[^"']*)["']/g)) assert.match(match[1], /agent-bridge\/(?:client|protocol)\.ts$/);
   }
-  const entry = await readFile(new URL("../../extensions/telegram.ts", import.meta.url), "utf8");
+  const entry = await readFile(new URL("../../extensions/bot.ts", import.meta.url), "utf8");
   assert.match(entry, /registerBot/); assert.match(entry, /src\/bot\/index\.ts/);
   const server = await readFile(new URL("../../src/agent-bridge/server.ts", import.meta.url), "utf8");
   assert.doesNotMatch(server, /(?:from|import)[^\n]*telegram/);
@@ -656,11 +680,11 @@ test("Pi package boundary imports only portable bridge client/protocol and the e
   assert.doesNotMatch(protocol, /BotSchema|username|source:.*telegram/);
 });
 
-test("group attachment refuses nonpersistent sessions but DM compatibility still works", async (t) => {
+test("all bot attachments require persistent sessions", async (t) => {
   const h = harness(t); h.ctx.sessionManager.getSessionFile = () => undefined;
   await h.emit("session_start"); await h.command("bot-connect", "task_thread-1 77");
   assert.equal(h.clients.length, 0); assert.match(h.notifications.at(-1), /saved Pi session/);
-  await h.command("bot-connect", "77"); assert.equal(h.client.isAttached, true);
+  await h.command("bot-connect", "77"); assert.equal(h.clients.length, 0);
 });
 test("group detach cancels input still preparing inside Pi", async (t) => {
   const gate = deferred(); let signal;

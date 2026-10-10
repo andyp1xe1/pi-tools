@@ -17,10 +17,10 @@ import { registerBotTools, type ToolConnection } from "./tools.ts";
 const SYSTEM_PROMPT_SUFFIX = `
 
 Bot bridge extension is active.
-- Messages forwarded from Telegram are prefixed with "[telegram]".
+- Forwarded bot messages include a source label.
 - Bot messages may include local attachment paths. Read those files as needed.
-- Use telegram_attach to send requested local files through the attached bridge, including requests from the terminal.
-- If a bot message asks for a file or generated artifact, call telegram_attach instead of only mentioning its local path.`;
+- Use bot_attach to send requested local files through the attached bridge, including requests from the terminal.
+- If a bot message asks for a file or generated artifact, call bot_attach instead of only mentioning its local path.`;
 
 const PROCESS_INTENT = Symbol.for("pi-tools.agent-bridge.attachment-intent");
 const ProcessIntentSchema = v.pipe(
@@ -128,16 +128,21 @@ export class BotSessionAdapter {
   }
   private updateStatus(ctx: ExtensionContext, error?: string): void {
     if (!this.isCurrentRuntime()) return;
-    const state = error
-      ? `error: ${error}`
-      : this.connection?.isAttached
-        ? this.activeTurnId
-          ? "replying"
-          : "attached"
-        : this.connectingPromise
-          ? "attaching"
-          : "detached";
-    ctx.ui.setStatus("bot", `bot ${state}${this.inbox.count ? ` · ${this.inbox.count} incoming` : ""}`);
+    const theme = ctx.ui.theme;
+    const label = theme.fg("accent", "bot");
+    if (error) {
+      ctx.ui.setStatus("bot", `${label} ${theme.fg("error", "error")} ${theme.fg("muted", error)}`);
+      return;
+    }
+    const state = this.connection?.isAttached
+      ? this.activeTurnId
+        ? theme.fg("accent", "replying")
+        : theme.fg("success", "connected")
+      : this.connectingPromise
+        ? theme.fg("warning", "connecting")
+        : theme.fg("muted", "disconnected");
+    const incoming = this.inbox.count ? theme.fg("muted", ` · ${this.inbox.count} incoming`) : "";
+    ctx.ui.setStatus("bot", `${label} ${state}${incoming}`);
   }
   private output(event: AgentOutput, ctx: ExtensionContext): void {
     if (!this.isCurrentRuntime() || !this.connection?.isAttached) return;
@@ -210,8 +215,8 @@ export class BotSessionAdapter {
   }
 
   private async attach(ctx: ExtensionContext, userId?: string, routeId?: string): Promise<void> {
-    if (routeId?.startsWith("task_") && !ctx.sessionManager.getSessionFile()) {
-      ctx.ui.notify("Group conversations require a saved Pi session. Restart Pi without --no-session.", "warning");
+    if (!ctx.sessionManager.getSessionFile()) {
+      ctx.ui.notify("Bot conversations require a saved Pi session. Restart Pi without --no-session.", "warning");
       return;
     }
     const runtimeId = this.runtimeId;
@@ -268,8 +273,16 @@ export class BotSessionAdapter {
     });
     this.connection = connection;
     this.connectingPromise = connection
-      .attach(ctx.sessionManager.getSessionId(), userId, routeId, ctx.cwd)
+      .attach(
+        ctx.sessionManager.getSessionId(),
+        userId,
+        routeId,
+        ctx.cwd,
+        undefined,
+        ctx.sessionManager.getSessionFile(),
+      )
       .then(() => undefined);
+    this.updateStatus(ctx);
     try {
       await this.connectingPromise;
     } catch (error) {
@@ -385,7 +398,7 @@ export class BotSessionAdapter {
       handler: async (_args, ctx) => {
         if (this.identity?.routeId?.startsWith("task_")) {
           ctx.ui.notify(
-            "This thread retains its Pi session identity. Reply /release in Telegram before changing its association, then /bot-connect explicitly.",
+            "This thread retains its Pi session identity. Reply /release in the bot conversation before changing its association, then /bot-connect explicitly.",
             "warning",
           );
           return;

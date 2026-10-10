@@ -15,6 +15,7 @@ import {
 } from "../domain.ts";
 import type { AgentPort, AttachmentIdentity, AttachmentRequest, BridgeFrontend, SessionBackend } from "../frontend.ts";
 import { log } from "../log.ts";
+import { LocalPathSchema } from "../protocol.ts";
 import { Router } from "../router.ts";
 import type { BridgeServer } from "../server.ts";
 import type { Store } from "../store.ts";
@@ -167,6 +168,7 @@ export class TelegramFrontend implements BridgeFrontend {
         if (!start || start.cancelled || start.token !== request.attachmentToken)
           throw new Error("This managed session startup was cancelled.");
       }
+      if (!request.sessionFile) throw new Error("Conversations require an exact saved session file.");
       const task = this.store.task(taskId);
       if (task?.container.platform !== "telegram") throw new Error("Unknown Telegram task.");
       if (Number(task.container.spaceId) > 0 && ownerId !== task.container.spaceId)
@@ -192,6 +194,7 @@ export class TelegramFrontend implements BridgeFrontend {
       this.store.attachTask({
         taskId: v.parse(TaskIdSchema, identity.routeId),
         sessionId: request.sessionId,
+        sessionFile: v.parse(LocalPathSchema, request.sessionFile),
         ownerId: identity.userId,
       });
   }
@@ -587,8 +590,10 @@ export class TelegramFrontend implements BridgeFrontend {
   async flushOne(signal?: AbortSignal): Promise<boolean> {
     const reply = this.store.nextReply(this.transportId);
     if (!reply) return false;
+    this.store.beginSend(reply);
+    let sent: TelegramMessage;
     try {
-      const sent = await this.api.call({
+      sent = await this.api.call({
         method: "sendMessage",
         schema: TelegramMessageSchema,
         signal,
@@ -602,14 +607,9 @@ export class TelegramFrontend implements BridgeFrontend {
           },
         },
       });
-      this.store.sent({
-        reply,
-        messageId: v.parse(MessageIdSchema, String(sent.message_id)),
-      });
     } catch (error) {
       if (signal?.aborted) throw error;
-      const permanent =
-        error instanceof TelegramDeliveryUnknown || (error instanceof TelegramError && [400, 403].includes(error.code));
+      const permanent = !(error instanceof TelegramError) || [400, 403].includes(error.code);
       const retryMs =
         error instanceof TelegramError && error.retryAfter
           ? error.retryAfter * 1000
@@ -620,7 +620,13 @@ export class TelegramFrontend implements BridgeFrontend {
         retryAt: permanent ? null : Date.now() + retryMs,
       });
       if (error instanceof TelegramError && [401, 409].includes(error.code)) throw error;
+      return true;
     }
+    // An accepted send is never a transport retry, even if this local commit fails.
+    this.store.sent({
+      reply,
+      messageId: v.parse(MessageIdSchema, String(sent.message_id)),
+    });
     return true;
   }
 }

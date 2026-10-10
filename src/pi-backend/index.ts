@@ -39,7 +39,7 @@ const defaults: Factories = {
 const localPath = (path: string, cwd: string): string =>
   resolve(cwd, path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : path === "~" ? homedir() : path);
 
-/** Filter discovery BEFORE factories run, including symlinked legacy entrypoints. */
+/** Managed sessions provide their own attachment; exclude our visible-session entrypoints before loading. */
 async function managedExtensionPaths(
   resources: Awaited<ReturnType<DefaultPackageManager["resolve"]>>["extensions"],
 ): Promise<string[]> {
@@ -47,14 +47,14 @@ async function managedExtensionPaths(
   for (const resource of resources) {
     if (!resource.enabled) continue;
     const canonical = await realpath(resource.path).catch(() => resource.path);
-    let legacy = false;
-    if (/^telegram\.(ts|js)$/.test(basename(canonical)) && basename(dirname(canonical)) === "extensions") {
+    let visibleAttachment = false;
+    if (/^bot\.(ts|js)$/.test(basename(canonical)) && basename(dirname(canonical)) === "extensions") {
       const manifest: unknown = await readFile(resolve(dirname(canonical), "../package.json"), "utf8")
         .then((text) => JSON.parse(text))
         .catch(() => undefined);
-      legacy = v.is(v.object({ name: v.literal("pi-tools") }), manifest);
+      visibleAttachment = v.is(v.object({ name: v.literal("pi-tools") }), manifest);
     }
-    if (!legacy) paths.push(resource.path);
+    if (!visibleAttachment) paths.push(resource.path);
   }
   return paths;
 }
@@ -78,6 +78,8 @@ export class PiSessionBackend implements SessionBackend {
 
   open(target: SessionTarget): Promise<{ sessionId: string; sessionFile: string }> {
     if (this.closing) return Promise.reject(new Error("Pi backend is closed"));
+    if (target.sessionId && !target.sessionFile)
+      return Promise.reject(new Error("Mapped Pi sessions require an exact saved session file."));
     const cached = this.routes.get(target.routeId);
     if (cached) {
       if (cached.host.stopped) return Promise.reject(new Error("Pi session is closing; retry after shutdown"));
@@ -220,7 +222,7 @@ class ManagedSession {
                 }),
               );
               pi.on("before_agent_start", (event) => ({
-                systemPrompt: `${event.systemPrompt}\n\nBot bridge is active. Tagged bot messages may include local attachment paths. Use telegram_attach to send requested files through this session's bridge. Do not retranscribe voice messages that already include a transcript unless asked.`,
+                systemPrompt: `${event.systemPrompt}\n\nBot bridge is active. Tagged bot messages may include local attachment paths. Use bot_attach to send requested files through this session's bridge. Do not retranscribe voice messages that already include a transcript unless asked.`,
               }));
             },
           },
@@ -231,10 +233,6 @@ class ManagedSession {
     const sessionDirSetting = process.env.PI_CODING_AGENT_SESSION_DIR || settings.getSessionDir();
     const sessionDir = sessionDirSetting ? localPath(sessionDirSetting, cwd) : undefined;
     let file = this.target.sessionFile;
-    if (!file && this.target.sessionId) {
-      file = (await SessionManager.list(cwd, sessionDir)).find((item) => item.id === this.target.sessionId)?.path;
-      if (!file) throw new Error(`Mapped Pi session not found: ${this.target.sessionId}`);
-    }
     this.check();
     let manager: SessionManager;
     if (file) {
@@ -310,7 +308,14 @@ class ManagedSession {
       },
     });
     this.client = client;
-    await client.attach(session.sessionId, this.target.ownerId, this.target.routeId, cwd, this.target.attachmentToken);
+    await client.attach(
+      session.sessionId,
+      this.target.ownerId,
+      this.target.routeId,
+      cwd,
+      this.target.attachmentToken,
+      file,
+    );
     this.check();
     if (!client.isAttached || session.sessionFile !== file)
       throw new Error("Pi session did not attach to its saved file");

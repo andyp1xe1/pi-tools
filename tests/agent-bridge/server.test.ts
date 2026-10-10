@@ -34,10 +34,10 @@ async function setup(owners=["7"], backend:SessionBackend=unavailableBackend){
  return{root,path,calls,server,adapter,store,api};
 }
 const snapshot:AgentSnapshot={idle:true,models:[{provider:"fake",id:"model",name:"Model"}],thinking:"off",supportedThinking:["off","high"],status:"Model: fake/model"};
-async function connect(path:string,sessionId="session",userId?:string,routeId?:string,cwd?:string,attachmentToken?:string){
+async function connect(path:string,sessionId="session",userId?:string,routeId?:string,cwd?:string,attachmentToken?:string,sessionFile=join(cwd??tmpdir(),`${sessionId}.jsonl`)){
  const prompts:PreparedPrompt[]=[];const commands:unknown[]=[];const errors:Error[]=[];
  const client=new BridgeClient({socketPath:path,onAttached:()=>{},onPrompt:prompt=>prompts.push(prompt),onAgentRequest:async request=>{commands.push(request);return request.operation==="snapshot"?snapshot:request.operation==="setThinking"?"high":true;},onDisconnect:error=>errors.push(error)});
- await client.attach(sessionId,userId,routeId,cwd,attachmentToken);return{client,prompts,commands,errors};
+ await client.attach(sessionId,userId,routeId,cwd,attachmentToken,sessionFile);return{client,prompts,commands,errors};
 }
 function dm(text="hello",id=1,user=7):TelegramUpdate{return{update_id:id,message:{message_id:id,chat:{id:user,type:"private"},from:{id:user,is_bot:false,first_name:"Owner"},text}};}
 async function until(predicate:()=>boolean){for(let i=0;i<100;i++){if(predicate())return;await Bun.sleep(5);}throw new Error("Timed out waiting for IPC");}
@@ -341,7 +341,7 @@ test("/stop cancels slow frontend media and album debounce without disabling fut
   await Bun.sleep(1300);expect(peer.prompts).toHaveLength(1);
  }finally{finish?.(join(h.root,"slow.jpg"));await peer.client.disconnect();}
 });
-test("managed DMs bind a project, continue by default and authorize their own owner, preserving legacy manual DMs",async()=>{
+test("managed DMs bind a project, continue by default and authorize their own owner, supporting explicit visible-session DMs",async()=>{
  const h=await managedSetup([],["7","8"]);try{
   await h.adapter.accept(dm(`/bind ${h.root}`,1,8));
   const a=await h.adapter.accept(dm("plain request",2,8));if(a?.kind!=="routed")throw new Error("Missing private task");

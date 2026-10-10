@@ -41,11 +41,11 @@ All human members in a bound topic can submit conversation input. Only the attac
 
 ## Telegram limits
 
-The frontend accepts human input in ordinary groups and forum supergroups, plus configured-owner bound DMs. It excludes channel posts, bots, anonymous senders, and topic creation messages. Legacy manual DM attachments remain supported. Native-managed group edits are not replayed as new input.
+The frontend accepts human input in ordinary groups and forum supergroups, plus configured-owner bound DMs. It excludes channel posts, bots, anonymous senders, and topic creation messages. Optional visible-session DM attachments remain supported. Native-managed group edits are not replayed as new input.
 
 A bot with privacy mode enabled can miss mentions and replies between users. Admin status provides broader visibility. Disabling privacy through BotFather requires re-adding the bot.
 
-Attached group conversations support text, captions, media downloads, albums and voice transcription. Group edits do not silently resubmit previously executed inputs. Private DM compatibility retains edits. Telegram's UTF-16 entity offsets identify mentions and commands.
+Attached group conversations support text, captions, media downloads, albums and voice transcription. Group edits do not silently resubmit previously executed inputs. Explicit visible-session DMs support edits. Telegram's UTF-16 entity offsets identify mentions and commands.
 
 General has the internal topic ID `general`. Replies there omit the outbound `message_thread_id` parameter. The bridge does not create topics.
 
@@ -62,7 +62,7 @@ General has the internal topic ID `general`. Replies there omit the outbound `me
 | `transport_cursors` | Polling offsets and their last update times. |
 | `outbox` | Replies, delivery states, attempts, and retry deadlines. |
 
-SQLite commits routing, input records, reply enqueueing, and cursor advancement together. The sole poller processes updates in order; its committed offset deduplicates replay without retaining a per-update ledger. The watermark cannot regress within an active epoch. Offsets expire after six idle days, before Telegram can reset update IDs after a week. Opening an older database drops only the redundant `processed_updates` table; project, conversation, message, and cursor records are retained.
+SQLite commits routing, input records, reply enqueueing, and cursor advancement together. The sole poller processes updates in order; its committed offset deduplicates replay without retaining a per-update ledger. The watermark cannot regress within an active epoch. Offsets expire after six idle days, before Telegram can reset update IDs after a week. The daemon expects the current database schema; it does not migrate older schemas.
 
 Database files have mode `0600`. New database directories have mode `0700`. The bridge refuses database file links and directory paths that another user can replace. It does not change an existing parent directory's permissions.
 
@@ -72,12 +72,12 @@ Valibot validates Telegram responses and SQLite rows. Internal IDs have distinct
 
 The durable acknowledgement/control reply loop waits 3.1 seconds between send attempts; live streaming uses its own throttled frontend queue. Replies keep their topic and anchor. Deleted anchors fail delivery instead of producing an unthreaded reply.
 
-Explicit Telegram rejections may retry with backoff; rate limits set the retry delay. Errors `400` and `403` and uncertain creation outcomes mark a reply as `failed`, without automatic resend. The other reply states are `pending` and `sent`.
+Before calling Telegram, the outbox durably marks the reply as non-retryable (`failed`, with an unconfirmed-outcome explanation). A successful send changes it to `sent`. Only a transport failure known to be safe to retry can return it to `pending`; explicit rate limits set the retry delay. Errors `400` and `403` and uncertain creation outcomes remain `failed`, without automatic resend. A database error after an accepted send is not a transport failure and never requeues that send.
 
-If a reply reaches users before the send result commits, the bridge can recover its task mapping from the saved acknowledgement text. Recovery requires that the parent message came from this bot and that the text identifies exactly one distinct conversation. Ambiguous identical replies remain unmapped. A crash can still duplicate an outgoing acknowledgement.
+If a reply reaches users before the send result commits, the bridge can recover its task mapping from the saved acknowledgement text. Recovery requires that the parent message came from this bot and that the text identifies exactly one distinct conversation. Ambiguous identical replies remain unmapped. If the process crashes after claiming an outbox reply, that reply is not automatically resent; it may be missing if the crash preceded publication. This deliberately prefers a missing acknowledgement to duplicate creation.
 
 The poller stops on authentication error `401` or polling conflict `409`. It refuses configured webhooks. Telegram retains incoming updates for at most 24 hours.
 
-The daemon supports one process per bot and database. It uses the original per-bot Telegram connection lock, preventing a simultaneous old Pi poller even across token rotation. Linux and Windows release ownership on process exit. Other systems can retain a filesystem socket after a crash.
+The daemon supports one process per bot and database. It uses an `agent-bridge-telegram-` per-bot connection lock, preventing simultaneous current-version daemons even across token rotation. It does not share the older Pi poller's lock namespace: stop any older poller before starting this daemon. Cross-version locking and old configuration readers are not supported. Linux and Windows release ownership on process exit. Other systems can retain a filesystem socket after a crash.
 
 The bridge has no HTTP API. A private local socket carries prepared prompts, normalized output events, agent capability requests, attachment delivery, and transcription. The portable client supports other agent backends without importing Pi. Telegram API methods and wire updates stay inside the daemon. Logs contain event names, task IDs, and input sequence numbers without message text or tokens. `inspect` includes stored message text.

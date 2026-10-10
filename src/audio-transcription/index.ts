@@ -46,7 +46,7 @@ export function createAudioTranscriptionTool(
     promptSnippet: "Transcribe speech from a local audio file with Whisper.",
     promptGuidelines: [
       "Use transcribe_audio to inspect speech in local audio files and audio attachments; do not try to read audio as text.",
-      "Do not use transcribe_audio for Telegram voice messages that already include a local transcript unless the user asks for retranscription.",
+      "Do not use transcribe_audio for voice messages that already include a local transcript unless the user asks for retranscription.",
     ],
     parameters: Type.Object({
       path: Type.String({ description: "Path to the local audio file." }),

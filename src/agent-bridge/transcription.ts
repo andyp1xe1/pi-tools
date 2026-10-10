@@ -40,8 +40,8 @@ export async function transcribeAudio(
       path,
       {
         ...options,
-        model: options.model ?? process.env.PI_TELEGRAM_WHISPER_MODEL ?? process.env.PI_WHISPER_MODEL,
-        language: options.language ?? process.env.PI_TELEGRAM_WHISPER_LANGUAGE ?? process.env.PI_WHISPER_LANGUAGE,
+        model: options.model ?? process.env.AGENT_BRIDGE_WHISPER_MODEL ?? process.env.PI_WHISPER_MODEL,
+        language: options.language ?? process.env.AGENT_BRIDGE_WHISPER_LANGUAGE ?? process.env.PI_WHISPER_LANGUAGE,
         timeoutMs: 5 * 60 * 1000,
       },
     );

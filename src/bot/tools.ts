@@ -11,13 +11,13 @@ export interface ToolConnection extends Pick<BridgeClient, "sendAttachment" | "t
 /** Capture the attachment before any file-system await. */
 export function registerBotTools(pi: ExtensionAPI, capture: () => ToolConnection): void {
   pi.registerTool({
-    name: "telegram_attach",
+    name: "bot_attach",
     label: "Bot Attach",
     description: "Send local files immediately through the attached bot bridge.",
     promptSnippet: "Send local files through the attached bot bridge.",
     promptGuidelines: [
-      "Use telegram_attach to send requested files through the bridge, including requests from the terminal.",
-      "When a bot message asks for a file or generated artifact, call telegram_attach instead of only mentioning its local path.",
+      "Use bot_attach to send requested files through the bridge, including requests from the terminal.",
+      "When a bot message asks for a file or generated artifact, call bot_attach instead of only mentioning its local path.",
     ],
     parameters: Type.Object({
       paths: Type.Array(Type.String({ description: "Local file path to attach" }), { minItems: 1 }),

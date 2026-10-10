@@ -116,7 +116,7 @@ test("directory checks do not run shell syntax or accept relative paths", () => 
 	);
 });
 
-test("project controls parse explicit conversation creation and legacy release", () => {
+test("project controls parse explicit conversation creation and attachment release", () => {
 	expect(parseCommand("bind", "~/dev/project")).toEqual({
 		kind: "bind",
 		directory: "~/dev/project",

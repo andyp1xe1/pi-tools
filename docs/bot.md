@@ -1,8 +1,8 @@
 # Pi bot integration
 
-`extensions/telegram.ts` registers the Pi integration from `src/bot/`. It uses the portable `src/agent-bridge/client.ts` over a private local socket. The [daemon](agent-bridge/reference.md) owns bot credentials, Telegram traffic, permissions, preparation, menus, and output delivery. Pi never polls Telegram or starts the daemon.
+`extensions/bot.ts` registers the Pi integration from `src/bot/`. It uses the portable `src/agent-bridge/client.ts` over a private local socket. The [daemon](agent-bridge/reference.md) owns bot credentials, Telegram traffic, permissions, preparation, menus, and output delivery. Pi never polls Telegram or starts the daemon.
 
-See [Telegram setup](agent-bridge/telegram.md) for the existing-bot handoff and [code boundaries](architecture.md) for the two modules.
+See [Telegram setup](agent-bridge/telegram.md) for configuration and startup and [code boundaries](architecture.md) for the two modules.
 
 ## Pi commands
 
@@ -13,7 +13,7 @@ See [Telegram setup](agent-bridge/telegram.md) for the existing-bot handoff and 
 | `/bot-status` | Show local state, frontend identity, conversation route, owner, pending input, and last error. |
 | `/bot-new` | Create and reattach a new Pi session for a DM route. Group routes require explicit release and replacement. |
 
-Each conversation has at most one live session; different group conversations can have independent sessions for the same owner. Each owner DM remains a separate compatibility route. Group conversations retain their saved session association after disconnect. Telegram `/start` cannot change permissions or pairing. See [project and thread routing](agent-bridge/routing.md).
+All Pi attachments require a saved session. Each conversation has at most one live session; different group conversations can have independent sessions for the same owner. Explicit visible-session DMs use separate owner routes. Group conversations retain their saved session association after disconnect. Telegram `/start` cannot change permissions or pairing. See [project and thread routing](agent-bridge/routing.md).
 
 ## Socket path
 
@@ -29,7 +29,7 @@ Pi and the daemon must run as the same local account and use the same path:
 Managed conversations start automatically after Telegram `/bind <directory>`; their exact native JSONL history resumes after restart. The optional Pi commands above still attach a visible session. The daemon handles Telegram messages, albums, commands, and callbacks in each conversation. It sends Pi prepared text and local image-file paths, not raw Telegram updates. Pi converts the files into its content format. Group replies remain anchored in the same project topic and conversation.
 
 - `/help` and `/start`: command help.
-- `/new [request]`: start a separate managed conversation without resetting an old thread (legacy manual DMs retain reattachment).
+- `/new [request]`: start a separate managed conversation without resetting an old thread (explicit visible-session DMs retain reattachment).
 - `/model` and `/thinking`: daemon-rendered menus backed by Pi capabilities.
 - `/status`: Pi model, usage, cost, and context.
 - `/compact`: request compaction when Pi is idle.
@@ -43,7 +43,7 @@ Pi emits normalized text and lifecycle events. The daemon handles Telegram chunk
 
 ## Agent tools and voice
 
-`telegram_attach` resolves relative paths against `ctx.cwd` and requests immediate delivery of absolute local files. The daemon selects the attached conversation's recipient and thread; Pi cannot supply arbitrary chat IDs. Uploads require regular local files of at most 50 MiB, with bounded cancellable reads and at most two simultaneous uploads. The tool works from Telegram and terminal prompts while attached.
+`bot_attach` resolves relative paths against `ctx.cwd` and requests immediate delivery of absolute local files. The daemon selects the attached conversation's recipient and thread; Pi cannot supply arbitrary chat IDs. Uploads require regular local files of at most 50 MiB, with bounded cancellable reads and at most two simultaneous uploads. The tool works from Telegram and terminal prompts while attached.
 
 The daemon downloads incoming voice messages and executes Whisper with daemon-configured defaults. Prepared prompts include a transcript or failure detail and local attachment paths. Long voice transcripts are truncated in the prompt with a link to their complete private local file.
 

@@ -1,4 +1,3 @@
-import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -69,17 +68,18 @@ test("threads have independent durable sessions, not a single session per owner"
     if (!first || !second) throw new Error("Missing thread fixtures");
     expect(store.task(first.id)).toEqual(first);
     expect(store.taskAttachment(first.id)).toBeNull();
-    store.attachTask({ taskId: first.id, sessionId: "session-a", ownerId: "7" });
-    store.attachTask({ taskId: second.id, sessionId: "session-b", ownerId: "7" });
-    store.attachTask({ taskId: first.id, sessionId: "session-a", ownerId: "7" });
+    const sessionFile = "/sessions/saved.jsonl";
+    store.attachTask({ taskId: first.id, sessionId: "session-a", ownerId: "7", sessionFile });
+    store.attachTask({ taskId: second.id, sessionId: "session-b", ownerId: "7", sessionFile });
+    store.attachTask({ taskId: first.id, sessionId: "session-a", ownerId: "7", sessionFile });
     expect(store.snapshot().attachments).toHaveLength(2);
-    expect(store.taskAttachment(first.id)).toEqual({ taskId: first.id, sessionId: "session-a", ownerId: "7" });
-    expect(() => store.attachTask({ taskId: first.id, sessionId: "different", ownerId: "7" })).toThrow("another session");
-    expect(() => store.attachTask({ taskId: first.id, sessionId: "session-a", ownerId: "8" })).toThrow("another session");
+    expect(store.taskAttachment(first.id)).toEqual({ taskId: first.id, sessionId: "session-a", ownerId: "7", sessionFile });
+    expect(() => store.attachTask({ taskId: first.id, sessionId: "different", ownerId: "7", sessionFile })).toThrow("another session");
+    expect(() => store.attachTask({ taskId: first.id, sessionId: "session-a", ownerId: "8", sessionFile })).toThrow("another session");
     store.detachTask(second.id);
-    expect(() => store.attachTask({ taskId: second.id, sessionId: "session-a", ownerId: "7" })).toThrow("another thread");
+    expect(() => store.attachTask({ taskId: second.id, sessionId: "session-a", ownerId: "7", sessionFile })).toThrow("another thread");
     store.detachTask(first.id);
-    store.attachTask({ taskId: first.id, sessionId: "replacement", ownerId: "7" });
+    store.attachTask({ taskId: first.id, sessionId: "replacement", ownerId: "7", sessionFile });
     expect(store.taskAttachment(first.id)?.sessionId).toBe("replacement");
   } finally {
     store.close();
@@ -93,7 +93,6 @@ test("session associations survive reopening without changing thread history", (
   try {
     const [first] = createThreads(store);
     if (!first) throw new Error("Missing thread fixture");
-    store.attachTask({ taskId: first.id, sessionId: "saved-session", ownerId: "7" });
     const sessionFile = join(root, "native.jsonl");
     store.attachTask({ taskId: first.id, sessionId: "saved-session", ownerId: "7", sessionFile });
     expect(() => store.attachTask({ taskId: first.id, sessionId: "saved-session", ownerId: "7", sessionFile: join(root, "wrong.jsonl") })).toThrow("different saved session file");
@@ -101,6 +100,29 @@ test("session associations survive reopening without changing thread history", (
     store = new Store(path);
     expect(store.taskAttachment(first.id)).toEqual({ taskId: first.id, sessionId: "saved-session", ownerId: "7", sessionFile });
     expect(store.snapshot().inputs).toHaveLength(2);
+  } finally {
+    store.close();
+    rmSync(root, { recursive: true });
+  }
+});
+
+test("a pre-send claim survives reopening and cannot be claimed or automatically sent again", () => {
+  const root = mkdtempSync(join(tmpdir(), "bridge-send-claim-"));
+  const path = join(root, "bridge.sqlite");
+  let store = new Store(path);
+  try {
+    const [task] = createThreads(store);
+    if (!task) throw new Error("Missing thread fixture");
+    store.enqueue({ transportId: "bot", container: task.container, replyToId: task.rootId, taskId: task.id, text: "Ready" });
+    const reply = store.nextReply("bot");
+    if (!reply) throw new Error("Missing reply fixture");
+    store.beginSend(reply);
+    expect(() => store.beginSend(reply)).toThrow("no longer pending");
+    store.close();
+    store = new Store(path);
+    expect(store.nextReply("bot", Date.now() + 60_000)).toBeNull();
+    expect(store.snapshot().outbox[0]).toMatchObject({ state: "failed", attempts: 0 });
+    expect(store.statistics("bot")).toMatchObject({ pendingReplies: 0, failedReplies: 1 });
   } finally {
     store.close();
     rmSync(root, { recursive: true });
@@ -148,35 +170,5 @@ test("an idle epoch reset admits lower and colliding new Telegram update IDs", (
     expect(store.processed({ transportId: "bot", updateId: 100 }, now)).toBe(true);
   } finally {
     store.close();
-  }
-});
-
-test("opening an old database removes only the redundant update ledger", () => {
-  const root = mkdtempSync(join(tmpdir(), "bridge-watermark-"));
-  const path = join(root, "bridge.sqlite");
-  try {
-    const db = new Database(path, { create: true });
-    db.exec(`
-      CREATE TABLE transport_cursors (transport_id TEXT PRIMARY KEY, next_offset INTEGER NOT NULL, updated_at INTEGER NOT NULL);
-      CREATE TABLE processed_updates (transport_id TEXT NOT NULL, update_id INTEGER NOT NULL, PRIMARY KEY(transport_id, update_id));
-      CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, directory TEXT NOT NULL UNIQUE);
-      INSERT INTO projects VALUES ('kept', 'Kept', '/workspace/kept');
-      INSERT INTO processed_updates VALUES ('bot', 100);
-      CREATE TABLE task_attachments (task_id TEXT PRIMARY KEY, session_id TEXT NOT NULL UNIQUE, owner_id TEXT NOT NULL);
-    `);
-    db.query("INSERT INTO transport_cursors VALUES (?, ?, ?)").run("bot", 101, Date.now());
-    db.close();
-    const store = new Store(path);
-    try {
-      expect(store.db.query("SELECT count(*) AS count FROM pragma_table_info('task_attachments') WHERE name='session_file'").get()).toEqual({ count: 1 });
-      expect(store.offset("bot")).toBe(101);
-      expect(store.processed({ transportId: "bot", updateId: 100 })).toBe(true);
-      expect(store.snapshot().projects).toHaveLength(1);
-      expect(store.db.query("SELECT name FROM sqlite_master WHERE name='processed_updates'").get()).toBeNull();
-    } finally {
-      store.close();
-    }
-  } finally {
-    rmSync(root, { recursive: true });
   }
 });

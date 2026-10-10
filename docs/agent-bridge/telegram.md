@@ -2,30 +2,6 @@
 
 The daemon owns the bot and automatically hosts native saved Pi SDK sessions. Sessions use a private local socket; they do not hold its token or poll Telegram. Independent conversations and each session's tool calls run in parallel.
 
-## Transfer your existing bot
-
-1. In the currently installed old Pi extension, run `/telegram-disconnect`. Do this before reloading the updated extension.
-2. From the checkout, run the one-time transfer script:
-
-   ```sh
-   cd ~/dev/pi-tools
-   npm install
-   bun scripts/transfer-telegram.ts
-   ```
-
-   The script transfers the existing token, paired owner, and a fresh polling cursor to the new private configuration. It removes the old credential file only after saving the new one. It refuses an existing destination or a bot still owned by the old poller. It makes no Telegram API calls and prints no token.
-3. Activate the updated pi-tools package and reload Pi.
-4. Start the daemon:
-
-   ```sh
-   agent-bridge start
-   ```
-
-   From a source checkout, use `bun bin/agent-bridge.mjs start` instead.
-5. In Telegram, send `/bind <project directory>` in your DM or group/topic, then send a request (mention the bot in groups). A saved session starts automatically.
-
-The transfer script is setup-only. The installed CLI and extension contain no old configuration reader or polling compatibility path.
-
 ## Configure a bot directly
 
 The daemon automatically loads `$XDG_CONFIG_HOME/agent-bridge/env`, defaulting to `~/.config/agent-bridge/env`. Explicit environment variables take precedence.
@@ -38,6 +14,10 @@ install -m 600 docs/agent-bridge/env.example ~/.config/agent-bridge/env
 Set `TELEGRAM_BOT_TOKEN` and `AGENT_BRIDGE_OWNER_IDS` in that file. Keep credentials outside shared checkouts. The configuration must be owned by you and private.
 
 Without owners, the bot reports your ID in a DM or `/where` in a group/topic. Set the reported ID and restart before routing tasks or attaching Pi. No stranger can pair themselves by sending the first message.
+
+Stop any older Pi Telegram poller before starting this daemon; cross-version lock compatibility is not provided.
+
+Start the daemon with `agent-bridge start`, or `bun --no-env-file bin/agent-bridge.mjs start` from a source checkout. Keep it running in a visible terminal pane.
 
 A configured webhook causes startup to fail. The daemon does not delete it.
 
@@ -53,7 +33,7 @@ A configured webhook causes startup to fail. The daemon does not delete it.
 
 A second live attachment for the same conversation is refused. Different group conversations may attach different saved sessions for the same owner. A session associated with a group conversation cannot also attach an owner DM.
 
-Legacy manual DM inputs received while detached are not queued. Managed conversations start/reopen automatically for new input. Old recorded inputs are never replayed; the live inbox is in-memory, not crash-durable.
+Explicit visible-session DM inputs received while detached are not queued. Managed conversations start/reopen automatically for new input. Old recorded inputs are never replayed; the live inbox is in-memory, not crash-durable.
 
 ## Bind a DM, group, or forum topic
 
@@ -83,11 +63,11 @@ Sessions share normal filesystem access; there are no configured thread limits, 
 
 ## Tools and voice messages
 
-Attached Pi sessions retain `telegram_attach`, streaming replies, typing, model/thinking pickers, media groups, and Telegram session controls. Only assistant text is published; thinking and tool results stay private.
+Attached Pi sessions retain `bot_attach`, streaming replies, typing, model/thinking pickers, media groups, and Telegram session controls. Only assistant text is published; thinking and tool results stay private.
 
 File downloads, sends, and voice transcription go through the daemon. The Pi audio and bot integrations share one `transcribe_audio` implementation; the bot integration supplies it when no audio transcription tool is already registered. Voice preprocessing always uses daemon transcription.
 
-Whisper must be installed in the daemon's PATH. Home Manager's `programs.pi-tools.audioTranscription.enable` installs it. `PI_TELEGRAM_WHISPER_MODEL` and `PI_TELEGRAM_WHISPER_LANGUAGE` select voice defaults; the general `PI_WHISPER_*` variables are fallbacks. The Nix CLI provides FFmpeg.
+Whisper must be installed in the daemon's PATH. Home Manager's `programs.pi-tools.audioTranscription.enable` installs it. `AGENT_BRIDGE_WHISPER_MODEL` and `AGENT_BRIDGE_WHISPER_LANGUAGE` select voice defaults; the general `PI_WHISPER_*` variables are fallbacks. The Nix CLI provides FFmpeg.
 
 ## Inspect and stop
 

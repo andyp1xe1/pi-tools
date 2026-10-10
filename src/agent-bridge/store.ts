@@ -100,13 +100,13 @@ const TaskAttachmentRowSchema = v.pipe(
     task_id: TaskIdSchema,
     session_id: v.pipe(v.string(), v.nonEmpty(), v.maxLength(128)),
     owner_id: v.pipe(v.string(), v.nonEmpty(), v.maxLength(128)),
-    session_file: v.optional(v.nullable(LocalPathSchema)),
+    session_file: LocalPathSchema,
   }),
   v.transform((row) => ({
     taskId: row.task_id,
     sessionId: row.session_id,
     ownerId: row.owner_id,
-    ...(row.session_file ? { sessionFile: row.session_file } : {}),
+    sessionFile: row.session_file,
   })),
 );
 export type TaskAttachment = v.InferOutput<typeof TaskAttachmentRowSchema>;
@@ -153,7 +153,7 @@ export class Store {
 			);
 			CREATE TABLE IF NOT EXISTS task_attachments (
 				task_id TEXT PRIMARY KEY REFERENCES tasks(id), session_id TEXT NOT NULL UNIQUE, owner_id TEXT NOT NULL,
-        session_file TEXT
+        session_file TEXT NOT NULL
 			);
 			CREATE TABLE IF NOT EXISTS message_routes (
 				container TEXT NOT NULL, message_id TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id),
@@ -167,7 +167,6 @@ export class Store {
 			CREATE TABLE IF NOT EXISTS transport_cursors (
 				transport_id TEXT PRIMARY KEY, next_offset INTEGER NOT NULL, updated_at INTEGER NOT NULL
 			);
-			DROP TABLE IF EXISTS processed_updates;
 			CREATE TABLE IF NOT EXISTS outbox (
 				id INTEGER PRIMARY KEY AUTOINCREMENT, transport_id TEXT NOT NULL, container TEXT NOT NULL,
 				reply_to_id TEXT NOT NULL, task_id TEXT REFERENCES tasks(id), text TEXT NOT NULL,
@@ -175,12 +174,6 @@ export class Store {
 				error TEXT, state TEXT NOT NULL DEFAULT 'pending'
 			);
 		`);
-    const columns = v.parse(
-      v.array(v.object({ name: v.string() })),
-      this.db.query("PRAGMA table_info(task_attachments)").all(),
-    );
-    if (!columns.some((column) => column.name === "session_file"))
-      this.db.exec("ALTER TABLE task_attachments ADD COLUMN session_file TEXT");
     if (path !== ":memory:") for (const suffix of ["-wal", "-shm"]) privateFile(path + suffix, false);
   }
 
@@ -293,13 +286,8 @@ export class Store {
       const existing = this.taskAttachment(row.taskId);
       if (existing) {
         if (existing.sessionId === row.sessionId && existing.ownerId === row.ownerId) {
-          if (row.sessionFile) {
-            if (existing.sessionFile && existing.sessionFile !== row.sessionFile)
-              throw new Error("This thread already has a different saved session file.");
-            this.db
-              .query("UPDATE task_attachments SET session_file=? WHERE task_id=?")
-              .run(row.sessionFile, row.taskId);
-          }
+          if (existing.sessionFile !== row.sessionFile)
+            throw new Error("This thread already has a different saved session file.");
           return;
         }
         throw new Error(
@@ -310,7 +298,7 @@ export class Store {
         throw new Error("This session is already assigned to another thread.");
       this.db
         .query("INSERT INTO task_attachments (task_id,session_id,owner_id,session_file) VALUES (?, ?, ?, ?)")
-        .run(row.taskId, row.sessionId, row.ownerId, row.sessionFile ?? null);
+        .run(row.taskId, row.sessionId, row.ownerId, row.sessionFile);
     });
   }
   /** Only an authorized, explicit replacement may forget a durable session association. */
@@ -440,6 +428,13 @@ export class Store {
 			AND available_at<=? ORDER BY id LIMIT 1`,
       params: [transportId, now],
     });
+  }
+  /** Claim before publication: a crash or failed result commit must not replay a creation. */
+  beginSend(reply: PendingReply): void {
+    const result = this.db
+      .query("UPDATE outbox SET state='failed', error=? WHERE id=? AND state='pending'")
+      .run("Delivery outcome unconfirmed. Automatic resend is disabled.", reply.id);
+    if (result.changes !== 1) throw new Error("Reply is no longer pending.");
   }
   sent({ reply, messageId }: { reply: PendingReply; messageId: MessageId }): void {
     this.atomic(() => {

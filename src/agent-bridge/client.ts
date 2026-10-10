@@ -99,10 +99,19 @@ export class BridgeClient {
     routeId?: string,
     cwd?: string,
     attachmentToken?: string,
+    sessionFile?: string,
   ): Promise<AttachedFrame> {
     if (this.socket) return Promise.reject(new Error("Attachment client cannot be reused"));
     // Validate before opening a socket, including calls made by untyped consumers.
-    const frame = v.parse(ClientFrameSchema, { type: "attach", sessionId, userId, routeId, cwd, attachmentToken });
+    const frame = v.parse(ClientFrameSchema, {
+      type: "attach",
+      sessionId,
+      userId,
+      routeId,
+      cwd,
+      attachmentToken,
+      sessionFile,
+    });
     this.state = "connecting";
     const attached = new Promise<AttachedFrame>((resolve, reject) => {
       this.resolveAttach = resolve;

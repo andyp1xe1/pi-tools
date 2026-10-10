@@ -173,27 +173,27 @@ test("single-flight route creation, parallel independent saved sessions, and nat
   await assert.rejects(h.backend.open(h.target()), /closed/);
 });
 
-test("exact file reopen and legacy ID lookup never continue recent or replace missing/corrupt mappings", async (t) => {
+test("exact file reopen rejects ID-only, missing and corrupt mappings without replacing history", async (t) => {
   const h = await harness(t);
   const first = await h.backend.open(h.target());
+  await assert.rejects(h.backend.open(h.target("task_one", { sessionId: first.sessionId })), /exact saved session file/);
   h.clients[0].isAttached = false; h.clients[0].options.onDisconnect(new Error("lost"));
   await until(() => h.sessions[0].disposed);
   const reopened = await h.backend.open(h.target("task_reopened", first));
   assert.deepEqual(reopened, first);
   assert.deepEqual(h.sessions[1].submissions, []);
-  const byId = await h.backend.open(h.target("task_legacy", { sessionId: first.sessionId }));
-  assert.deepEqual(byId, first);
+  await assert.rejects(h.backend.open(h.target("task_id_only", { sessionId: first.sessionId })), /exact saved session file/);
   const missing = join(h.dir, "absent.jsonl");
   await assert.rejects(h.backend.open(h.target("task_missing", { sessionId: "mapped", sessionFile: missing })), /ENOENT/);
   await assert.rejects(stat(missing), { code: "ENOENT" });
-  await assert.rejects(h.backend.open(h.target("task_unknown", { sessionId: "nonexistent" })), /not found/);
+  await assert.rejects(h.backend.open(h.target("task_unknown", { sessionId: "nonexistent" })), /exact saved session file/);
   for (const data of ["", "garbage", '{}\n']) {
     const path = join(h.dir, "bad.jsonl"); await writeFile(path, data);
     await assert.rejects(h.backend.open(h.target("task_bad", { sessionFile: path })));
     assert.equal(await readFile(path, "utf8"), data);
   }
   await assert.rejects(h.backend.open(h.target("task_mismatch", { ...first, sessionId: "wrong" })), /does not match/);
-  assert.equal(h.sessions.length, 3);
+  assert.equal(h.sessions.length, 2);
 });
 
 test("independent turns run concurrently in the same dirty cwd", async (t) => {
@@ -369,10 +369,10 @@ test("tools capture session-local senders/transcription, cancellation and daemon
   h.clients.sort((a, b) => a.identity.routeId.localeCompare(b.identity.routeId));
   const file = join(h.cwd, "audio.ogg"); await writeFile(file, "fake audio, never decoded");
   const execute = (index, name, args, signal) => h.sessions[index].services.tools.get(name).execute("tool", args, signal, undefined, { cwd: h.cwd });
-  assert.deepEqual(h.sessions.map((session) => [...session.services.tools.keys()]), [["telegram_attach", "transcribe_audio"], ["telegram_attach", "transcribe_audio"]]);
+  assert.deepEqual(h.sessions.map((session) => [...session.services.tools.keys()]), [["bot_attach", "transcribe_audio"], ["bot_attach", "transcribe_audio"]]);
   const transcripts = await Promise.all([execute(0, "transcribe_audio", { path: "@audio.ogg" }), execute(1, "transcribe_audio", { path: "audio.ogg" })]);
   assert.deepEqual(transcripts.map((result) => result.content[0].text), ["task_one", "task_two"]);
-  await execute(1, "telegram_attach", { paths: ["audio.ogg"] });
+  await execute(1, "bot_attach", { paths: ["audio.ogg"] });
   assert.equal(h.clients[0].attachments.length, 0); assert.equal(h.clients[1].attachments.length, 1);
   h.clients[0].transcriptionError = true;
   await assert.rejects(execute(0, "transcribe_audio", { path: file }), /daemon unavailable/);
@@ -384,15 +384,15 @@ test("tools capture session-local senders/transcription, cancellation and daemon
   assert.equal((await execute(1, "transcribe_audio", { path: file })).content[0].text, "task_two");
 });
 
-test("discovery filters legacy manual bot/telegram before factories, retaining unrelated resources", async (t) => {
+test("discovery filters our visible-session entrypoints before factories, retaining unrelated resources", async (t) => {
   const h = await harness(t);
   const extensions = join(h.agentDir, "extensions");
   const packageRoot = join(h.dir, "pi-tools");
   await mkdir(join(packageRoot, "extensions"), { recursive: true });
   await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name: "pi-tools" }));
-  const legacy = join(packageRoot, "extensions", "telegram.ts");
-  await writeFile(legacy, 'throw new Error("legacy factory ran")');
-  await symlink(legacy, join(extensions, "legacy-link.ts"));
+  const manual = join(packageRoot, "extensions", "bot.ts");
+  await writeFile(manual, 'throw new Error("manual attachment factory ran")');
+  await symlink(manual, join(extensions, "manual-link.ts"));
   await writeFile(join(extensions, "telegram.ts"), "export default function () {}");
   await writeFile(join(extensions, "bot.ts"), "export default function () {}");
   await writeFile(join(extensions, "normal.ts"), "export default function () {}");
@@ -450,7 +450,7 @@ test("real SDK resources/startup/shutdown and BridgeClient socket attach with a 
   const marker = join(h.dir, "lifecycle.txt");
   await writeFile(join(h.agentDir, "extensions", "lifecycle.js"), `import { appendFileSync } from "node:fs"; export default function(pi) { pi.on("session_start", () => appendFileSync(${JSON.stringify(marker)}, "start\\n")); pi.on("session_shutdown", async () => { await Promise.resolve(); appendFileSync(${JSON.stringify(marker)}, "shutdown\\n"); }); }`);
   await writeFile(join(h.agentDir, "package.json"), JSON.stringify({ name: "pi-tools" }));
-  await writeFile(join(h.agentDir, "extensions", "telegram.ts"), 'throw new Error("manual attachment must not load")');
+  await writeFile(join(h.agentDir, "extensions", "bot.ts"), 'throw new Error("manual attachment must not load")');
   await writeFile(join(h.agentDir, "extensions", "offline-provider.js"), `export default function(pi) { pi.registerProvider("fake", { baseUrl: "http://must-never-be-called.invalid", apiKey: "offline-only", api: "openai-completions", models: [${JSON.stringify(model)}] }); }`);
   await writeFile(join(h.cwd, "AGENTS.md"), "# Native context preserved\n");
   const native = [], backend = new PiSessionBackend({ socketPath }, {

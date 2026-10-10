@@ -357,11 +357,62 @@ test("idle reset clears obsolete update IDs, including a colliding new update ID
  await adapter.accept({update_id:100,message:mention(11)});
  expect(store.snapshot().tasks).toHaveLength(2);expect(store.offset(adapter.transportId)).toBe(101);
 });
-test("unknown acknowledgement outcomes fail without automatic resend",async()=>{
- const {adapter,store,api}=setup();seed(store);
- await adapter.accept({update_id:1,message:mention(10)});api.error=new TelegramDeliveryUnknown();
- await adapter.flushOne();await adapter.flushOne();
- expect(api.calls).toHaveLength(1);expect(store.snapshot().outbox[0]?.state).toBe("failed");
+for (const error of [new TelegramDeliveryUnknown(), new Error("Unknown send outcome")]) {
+  test(`unknown acknowledgement outcomes fail without automatic resend: ${error.name}`, async () => {
+    const { adapter, store, api } = setup(); seed(store);
+    await adapter.accept({ update_id: 1, message: mention(10) }); api.error = error;
+    await adapter.flushOne(); await adapter.flushOne();
+    expect(api.calls).toHaveLength(1); expect(store.snapshot().outbox[0]?.state).toBe("failed");
+  });
+}
+
+test("an accepted reply is never resent when SQLite cannot commit its message mapping", async () => {
+  const { adapter, store, api } = setup();
+  seed(store);
+  await adapter.accept({ update_id: 1, message: mention(10) });
+  store.sent = () => { throw new Error("SQLITE_BUSY"); };
+  let retryWrites = 0;
+  store.failed = () => { retryWrites++; throw new Error("SQLITE_BUSY"); };
+  await expect(adapter.flushOne()).rejects.toThrow("SQLITE_BUSY");
+  expect(store.snapshot().outbox[0]).toMatchObject({ state: "failed", attempts: 0 });
+  expect(store.nextReply(adapter.transportId, Date.now() + 60_000)).toBeNull();
+  const reopened = new TelegramFrontend(config, store, api, bot, new SharedTelegramClient(() => ({ botToken: "test" })), unavailableBackend);
+  expect(await adapter.flushOne()).toBe(false);
+  expect(await reopened.flushOne()).toBe(false);
+  expect(api.calls).toHaveLength(1);
+  expect(retryWrites).toBe(0);
+  const text = api.calls[0]!.body.text as string;
+  await adapter.accept({ update_id: 2, message: message(11, {
+    reply_to_message: message(100, { from: { id: 99, is_bot: true }, text }),
+  }) });
+  expect(store.snapshot().inputs).toHaveLength(2);
+});
+
+test("failed pre-send persistence never calls Telegram, and recovery can send once", async () => {
+  const { adapter, store, api } = setup();
+  seed(store);
+  await adapter.accept({ update_id: 1, message: mention(10) });
+  const beginSend = store.beginSend.bind(store);
+  store.beginSend = () => { throw new Error("SQLITE_BUSY"); };
+  await expect(adapter.flushOne()).rejects.toThrow("SQLITE_BUSY");
+  expect(api.calls).toHaveLength(0);
+  expect(store.snapshot().outbox[0]?.state).toBe("pending");
+  store.beginSend = beginSend;
+  expect(await adapter.flushOne()).toBe(true);
+  expect(await adapter.flushOne()).toBe(false);
+  expect(api.calls).toHaveLength(1);
+  expect(store.snapshot().outbox[0]?.state).toBe("sent");
+});
+
+test("an unrecordable uncertain transport failure also stays non-retryable", async () => {
+  const { adapter, store, api } = setup();
+  seed(store);
+  await adapter.accept({ update_id: 1, message: mention(10) });
+  api.error = new TelegramDeliveryUnknown();
+  store.failed = () => { throw new Error("SQLITE_BUSY"); };
+  await expect(adapter.flushOne()).rejects.toThrow("SQLITE_BUSY");
+  expect(await adapter.flushOne()).toBe(false);
+  expect(api.calls).toHaveLength(1);
 });
 
 test("General sends omit message_thread_id", async () => {

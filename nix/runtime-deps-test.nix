@@ -9,6 +9,8 @@ in pkgs.runCommand "check-extension-runtime" {
   test -f node_modules/valibot/LICENSE.md
   test ! -e node_modules/playwright
   test ! -e bin/browser-cli.mjs
+  test -f extensions/bot.ts
+  test ! -e extensions/telegram.ts
   node --experimental-transform-types --input-type=module <<'JS'
   import assert from "node:assert/strict";
   import * as v from "valibot";

@@ -2,5 +2,5 @@
   "extends": "./tsconfig.json",
   "compilerOptions": { "types": ["node", "bun"] },
   "exclude": [],
-  "include": ["src/agent-bridge/**/*.ts", "scripts/transfer-telegram.ts", "tests/agent-bridge/**/*.ts"]
+  "include": ["src/agent-bridge/**/*.ts", "tests/agent-bridge/**/*.ts"]
 }

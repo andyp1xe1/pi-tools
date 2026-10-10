@@ -15,13 +15,13 @@ In groups, mention the bot outside a tracked reply chain to create a conversatio
 
 In a bound DM, ordinary input continues its most recently created conversation. An explicit reply can select an older conversation. `/new [request]` creates a separate conversation in either scope; it does not reset or erase the old session.
 
-The first input starts a native SDK session automatically. No terminal `/bot-connect task_<id>` ceremony is required. SQLite retains project bindings, message mappings, exact native session ID/file associations, and delivery metadata—not a second copy of Pi history. Existing `tasks`/`task_<id>` names remain conversation identifiers for compatibility.
+The first input starts a native SDK session automatically. No terminal `/bot-connect task_<id>` ceremony is required. SQLite retains project bindings, message mappings, exact native session ID/file associations, and delivery metadata—not a second copy of Pi history. Conversations use `tasks`/`task_<id>` identifiers.
 
 ## Persistence and ordering
 
-Sessions use Pi's normal saved JSONL files, auth, settings, model providers, tools, extensions, prompts, and skills. Noninteractive startup respects saved project trust; it does not approve confirmations. Only pi-tools' legacy manual Telegram attachment extension is excluded from managed sessions. Managed attachment and transcription state is session-local.
+Sessions use Pi's normal saved JSONL files, auth, settings, model providers, tools, extensions, prompts, and skills. Noninteractive startup respects saved project trust; it does not approve confirmations. Only pi-tools' visible-session attachment extension is excluded from managed sessions. Managed attachment and transcription state is session-local.
 
-Reconnection opens the exact mapped file; it never selects the most recent session. Older ID-only mappings locate that exact ID in the native session directory. Missing or mismatched history fails explicitly rather than silently creating replacement history. A new session's native header is reserved before association is returned.
+Reconnection opens the exact mapped file; it never selects the most recent session. A mapped session requires its exact saved file path; ID-only associations are rejected. Missing or mismatched history fails explicitly rather than silently creating replacement history. A new session's native header is reserved before association is returned.
 
 One creation promise per conversation prevents duplicate SDK sessions. Preparation retains FIFO ordering within that conversation; it does not serialize other conversations sharing its directory. The live inbox is not crash-durable: old recorded inputs are never replayed, and an interrupted input may need resubmission.
 
@@ -33,7 +33,7 @@ One creation promise per conversation prevents duplicate SDK sessions. Preparati
 
 A configured conversation starter owns its controls; otherwise the first configured bot owner does. Other group members may submit input but cannot change models or abort that session. Each private conversation belongs to its own configured owner.
 
-Legacy visible Pi attachment remains available through `/bot-connect`. A second live writer/attachment is rejected by bridge session identity. Stop or relinquish the managed session before opening its file interactively; Pi session files must not have concurrent writers. Advanced `/release` explicitly clears an association and cancels startup; it is not required for ordinary `/new` or restart/resume.
+Optional visible Pi attachment remains available through `/bot-connect`. A second live writer/attachment is rejected by bridge session identity. Stop or relinquish the managed session before opening its file interactively; Pi session files must not have concurrent writers. Advanced `/release` explicitly clears an association and cancels startup; it is not required for ordinary `/new` or restart/resume.
 
 ## Boundaries
 

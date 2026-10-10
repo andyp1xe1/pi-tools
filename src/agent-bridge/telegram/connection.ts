@@ -10,7 +10,7 @@ export class TelegramConnection {
   static async acquire(botToken: string): Promise<TelegramConnection> {
     // Bot identity survives token rotation. Never put a secret in the socket name.
     const botId = botToken.split(":", 1)[0];
-    const name = `pi-telegram-${createHash("sha256").update(botId).digest("hex").slice(0, 32)}`;
+    const name = `agent-bridge-telegram-${createHash("sha256").update(botId).digest("hex").slice(0, 32)}`;
     // Linux abstract sockets and Windows pipes disappear even on process crashes.
     // On other systems Node removes the filesystem socket on a clean close.
     const path =
