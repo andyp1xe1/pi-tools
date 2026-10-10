@@ -2,6 +2,7 @@ import type {
   AgentOutput,
   AgentSnapshot,
   ClientFrame,
+  Notification,
   PreparedPrompt,
   ServerFrame,
   Statistics,
@@ -37,6 +38,8 @@ export interface BridgeFrontend {
   bind(request: AttachmentRequest, identity: AttachmentIdentity): void;
   statistics(): Statistics;
   error(error: unknown): { message: string; unknownOutcome?: boolean } | undefined;
+  /** Local administration only; the frontend authorizes the opaque recipient. */
+  notify?(notification: Notification): Promise<void>;
 }
 export interface FrontendPeer {
   readonly identity: AttachmentIdentity;

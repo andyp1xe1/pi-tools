@@ -3,7 +3,13 @@ import * as v from "valibot";
 import { loadConfig, loadEnvironment } from "./config.ts";
 import type { SessionBackend } from "./frontend.ts";
 import { errorMessage, log } from "./log.ts";
-import { bridgeSocketPath, MAX_FRAME_BYTES, ServerFrameSchema } from "./protocol.ts";
+import {
+  bridgeSocketPath,
+  type ClientFrame,
+  ClientFrameSchema,
+  MAX_FRAME_BYTES,
+  ServerFrameSchema,
+} from "./protocol.ts";
 import { BridgeServer } from "./server.ts";
 import { Store } from "./store.ts";
 import { TelegramHttpClient } from "./telegram/api.ts";
@@ -19,6 +25,7 @@ agent-bridge start     Run the Telegram daemon in the foreground.
 agent-bridge status    Show the bot and attached Pi sessions.
 agent-bridge stop      Stop the daemon.
 agent-bridge inspect   Print projects, bindings, tasks, and recorded inputs.
+agent-bridge notify <owner ID> <text>   Send a one-shot owner DM through the running daemon.
 agent-bridge help      Show this help.
 
 TELEGRAM_BOT_TOKEN supplies the bot token. Only this daemon may poll it.
@@ -43,14 +50,17 @@ async function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-async function controlDaemon(type: "status" | "stop"): Promise<void> {
+async function controlDaemon(frame: Extract<ClientFrame, { type: "status" | "stop" | "notify" }>): Promise<void> {
+  v.parse(ClientFrameSchema, frame);
   await new Promise<void>((resolve, reject) => {
     const socket = createConnection(bridgeSocketPath());
     socket.setEncoding("utf8");
     let buffer = "";
-    socket.setTimeout(5000, () => socket.destroy(new Error("Daemon control timed out.")));
+    socket.setTimeout(frame.type === "notify" ? 30_000 : 5000, () =>
+      socket.destroy(new Error("Daemon control timed out.")),
+    );
     socket.once("error", () => reject(new Error("Cannot contact agent-bridge. Start the daemon first.")));
-    socket.once("connect", () => socket.write(`${JSON.stringify({ type })}\n`));
+    socket.once("connect", () => socket.write(`${JSON.stringify(frame)}\n`));
     socket.on("data", (chunk) => {
       buffer += chunk;
       if (Buffer.byteLength(buffer) > MAX_FRAME_BYTES) {
@@ -61,8 +71,15 @@ async function controlDaemon(type: "status" | "stop"): Promise<void> {
       const index = buffer.indexOf("\n");
       if (index < 0) return;
       try {
-        const frame = v.parse(ServerFrameSchema, JSON.parse(buffer.slice(0, index)));
-        process.stdout.write(`${JSON.stringify(frame, null, 2)}\n`);
+        const response = v.parse(ServerFrameSchema, JSON.parse(buffer.slice(0, index)));
+        if (response.type === "error") {
+          socket.destroy();
+          reject(new Error(response.message));
+          return;
+        }
+        const expected = frame.type === "stop" ? "stopping" : frame.type === "notify" ? "notified" : "status";
+        if (response.type !== expected) throw new Error("Unexpected daemon response.");
+        process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);
         socket.end();
         resolve();
       } catch {
@@ -80,10 +97,15 @@ export async function run(options: { backend?: SessionBackend } = {}): Promise<v
     process.stdout.write(`${USAGE}\n`);
     return;
   }
-  if (!["start", "inspect", "status", "stop"].includes(mode)) throw new Error(`Unknown command: ${mode}`);
+  if (!["start", "inspect", "status", "stop", "notify"].includes(mode)) throw new Error(`Unknown command: ${mode}`);
   loadEnvironment();
   if (mode === "status" || mode === "stop") {
-    await controlDaemon(mode);
+    await controlDaemon({ type: mode });
+    return;
+  }
+  if (mode === "notify") {
+    if (!process.argv[3] || !process.argv[4]) throw new Error("Usage: agent-bridge notify <owner ID> <text>");
+    await controlDaemon({ type: "notify", userId: process.argv[3], text: process.argv.slice(4).join(" ") });
     return;
   }
   const config = loadConfig();

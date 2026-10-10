@@ -149,8 +149,12 @@ export class BridgeServer {
               socket.end();
               return;
             }
-            if (frame.type === "request" && this.jobs.size >= 128) {
-              send(socket, { type: "error", id: frame.id, message: "Bridge is busy. Try again later." });
+            if ((frame.type === "request" || frame.type === "notify") && this.jobs.size >= 128) {
+              send(socket, {
+                type: "error",
+                ...(frame.type === "request" ? { id: frame.id } : {}),
+                message: "Bridge is busy. Try again later.",
+              });
               return;
             }
             const task = this.handle(socket, frame).catch((error) => {
@@ -163,7 +167,7 @@ export class BridgeServer {
               });
             });
             // Long tool calls cannot block cancellation, detach, or reverse RPC replies.
-            if (frame.type === "request") this.track(task);
+            if (frame.type === "request" || frame.type === "notify") this.track(task);
             else return task;
           })
           .catch(() => {
@@ -215,6 +219,11 @@ export class BridgeServer {
         return;
       case "stop":
         socket.end(`${JSON.stringify({ type: "stopping" })}\n`, () => this.stop());
+        return;
+      case "notify":
+        if (!this.transport.notify) throw new Error("This frontend does not support notifications.");
+        await this.transport.notify(frame);
+        send(socket, { type: "notified", userId: frame.userId });
         return;
       case "agent-result":
       case "agent-error": {

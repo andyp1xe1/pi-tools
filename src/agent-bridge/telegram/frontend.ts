@@ -15,7 +15,7 @@ import {
 } from "../domain.ts";
 import type { AgentPort, AttachmentIdentity, AttachmentRequest, BridgeFrontend, SessionBackend } from "../frontend.ts";
 import { log } from "../log.ts";
-import { LocalPathSchema } from "../protocol.ts";
+import { LocalPathSchema, type Notification, NotificationSchema } from "../protocol.ts";
 import { Router } from "../router.ts";
 import type { BridgeServer } from "../server.ts";
 import type { Store } from "../store.ts";
@@ -119,6 +119,7 @@ export function normalizeTelegram(
 export class TelegramFrontend implements BridgeFrontend {
   private server?: BridgeServer;
   private closed = false;
+  private readonly lifetime = new AbortController();
   private readonly jobs = new Set<Promise<unknown>>();
   private readonly starts = new Map<TaskId, { token: string; cancelled: boolean }>();
   private readonly albums = new Map<string, { taskId: TaskId; authorId: string; expiresAt: number }>();
@@ -152,6 +153,26 @@ export class TelegramFrontend implements BridgeFrontend {
     if (error instanceof TelegramDeliveryUnknown) return { message: error.message, unknownOutcome: true };
     if (error instanceof TelegramError || error instanceof TelegramAttachmentError) return { message: error.message };
     return undefined;
+  }
+  async notify(notification: Notification): Promise<void> {
+    const { userId, text } = v.parse(NotificationSchema, notification);
+    if (this.closed) throw new Error("Telegram frontend is closed.");
+    if (!this.config.ownerTelegramUserIds.includes(userId))
+      throw new Error("Notifications may only be sent to a configured owner.");
+    // A one-shot daemon-owned send: uncertain creation outcomes are never retried.
+    const job = this.api.call({
+      method: "sendMessage",
+      schema: TelegramMessageSchema,
+      signal: this.lifetime.signal,
+      body: { chat_id: userId, text },
+    });
+    this.jobs.add(job);
+    try {
+      await job;
+      log({ level: "info", event: "bridge.notification_sent", details: { userId } });
+    } finally {
+      this.jobs.delete(job);
+    }
   }
   authorize(request: AttachmentRequest): AttachmentIdentity & { routeId: string } {
     const ownerId =
@@ -362,6 +383,7 @@ export class TelegramFrontend implements BridgeFrontend {
   }
   async close(): Promise<void> {
     this.closed = true;
+    this.lifetime.abort();
     while (this.jobs.size) await Promise.allSettled([...this.jobs]);
   }
   async accept(update: TelegramUpdate): Promise<RouteResult | null> {

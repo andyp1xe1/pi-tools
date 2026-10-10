@@ -63,6 +63,8 @@ Set `programs.pi-tools.browserCli.enable = false;` to omit the CLI, its skill, a
 
 The module also writes pi settings and installs `piCliPackage` if supplied. The `bot` and `audioTranscription` options are off unless enabled.
 
+`programs.pi-tools.agentBridge.enable` installs the bridge CLI; it does not start a daemon. On Linux, additionally set `programs.pi-tools.agentBridge.service.enable = true;` for the opt-in systemd user service. Keep credentials in the private environment file, not Nix expressions. Stop any foreground poller before activating the service. See [service setup and migration](docs/agent-bridge/telegram.md#home-manager-user-service-linux).
+
 The CLI now defaults to `$XDG_DATA_HOME/browser-cli` or `~/.local/share/browser-cli`. It does not migrate existing data. See [rename and data compatibility](docs/browser-cli.md#rename-and-data-compatibility) before reusing old profiles. Activate the updated Home Manager generation to put the renamed executable on `PATH`. For a source checkout, rerun `npm link`. Reload Pi to discover the renamed skill.
 
 The default pi theme is `gruvbox-dark`. The module also includes `pi-web-access` and the [CLIProxyAPI provider fork](https://github.com/andyp1xe1/pi-cliproxyapi-provider). Set `theme = null;` or `recommendedPackages = [];` to omit these defaults. Use `extraPackages` and `settings` for other pi settings.
@@ -82,6 +84,8 @@ npm run test:agent-bridge
 npm run test:bot
 npm run test:extensions
 ```
+
+The project's `nix develop` shell supplies flake-selected Node 22, Bun and FFmpeg for reproducible development commands. If those tools already work on your host, ordinary npm checks can run directly; npm scripts use the project's local TypeScript/Biome executables. The shell does not install `node_modules`, activate Home Manager or start the bridge. Installed packages and the user service do not depend on a development shell.
 
 Every extension is a thin entrypoint calling a named registration function. The standalone daemon and Telegram infrastructure live in `src/agent-bridge/`; Pi integration lives in `src/bot/`, reached through `extensions/bot.ts`. Their boundary is a portable, validated IPC client/protocol, not shared Pi or Telegram execution code. See [Code boundaries and bridge lifecycle](docs/architecture.md).
 

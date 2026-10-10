@@ -81,6 +81,15 @@ const AgentRequestSchema = v.object({
   body: v.record(v.string(), v.unknown()),
 });
 export type AgentRequest = v.InferOutput<typeof AgentRequestSchema>;
+export const NotificationSchema = v.object({
+  userId,
+  text: v.pipe(
+    text,
+    v.maxLength(4000),
+    v.check((value) => value.trim().length > 0, "Notification text is required."),
+  ),
+});
+export type Notification = v.InferOutput<typeof NotificationSchema>;
 export const ClientFrameSchema = v.variant("type", [
   v.object({
     type: v.literal("attach"),
@@ -93,6 +102,7 @@ export const ClientFrameSchema = v.variant("type", [
   }),
   v.object({ type: v.literal("status") }),
   v.object({ type: v.literal("stop") }),
+  v.object({ type: v.literal("notify"), ...NotificationSchema.entries }),
   v.object({ type: v.literal("detach") }),
   v.object({ type: v.literal("cancel"), id: identifier }),
   v.object({ type: v.literal("output"), event: AgentOutputSchema }),
@@ -134,6 +144,7 @@ export const ServerFrameSchema = v.variant("type", [
     uptimeSeconds: integer,
   }),
   v.object({ type: v.literal("stopping") }),
+  v.object({ type: v.literal("notified"), userId }),
   v.object({ type: v.literal("detached") }),
 ]);
 export type ServerFrame = v.InferOutput<typeof ServerFrameSchema>;
