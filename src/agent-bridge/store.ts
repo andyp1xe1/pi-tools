@@ -110,6 +110,11 @@ const TaskAttachmentRowSchema = v.pipe(
   })),
 );
 export type TaskAttachment = v.InferOutput<typeof TaskAttachmentRowSchema>;
+export interface ThreadSettings {
+  cwd: string;
+  isDefault: boolean;
+  parentThreadId?: string;
+}
 
 function privateFile(path: string, create: boolean): void {
   let fd: number;
@@ -151,6 +156,20 @@ export class Store {
 				id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), container TEXT NOT NULL,
 				root_id TEXT NOT NULL, title TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(container, root_id)
 			);
+      CREATE TABLE IF NOT EXISTS thread_settings (
+        task_id TEXT PRIMARY KEY REFERENCES tasks(id), cwd TEXT NOT NULL, parent_thread_id TEXT
+      );
+      CREATE TABLE IF NOT EXISTS default_threads (
+        container TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id),
+        task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id), PRIMARY KEY(container, project_id)
+      );
+      CREATE TABLE IF NOT EXISTS visible_writers (
+        task_id TEXT PRIMARY KEY REFERENCES tasks(id), session_id TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS conversation_users (
+        container TEXT NOT NULL, user_id TEXT NOT NULL, name TEXT NOT NULL,
+        PRIMARY KEY(container, user_id)
+      );
 			CREATE TABLE IF NOT EXISTS task_attachments (
 				task_id TEXT PRIMARY KEY REFERENCES tasks(id), session_id TEXT NOT NULL UNIQUE, owner_id TEXT NOT NULL,
         session_file TEXT NOT NULL
@@ -260,6 +279,83 @@ export class Store {
       params: [containerKey(container)],
     });
   }
+  threadPage(container: Container, projectId: ProjectId, limit: number, before?: TaskId): Task[] {
+    const cursor = before
+      ? this.one({
+          schema: v.object({ created_at: v.string(), rowid: integer }),
+          sql: "SELECT created_at,rowid FROM tasks WHERE id=? AND container=? AND project_id=?",
+          params: [before, containerKey(container), projectId],
+        })
+      : null;
+    if (before && !cursor) throw new Error("Unknown thread list cursor");
+    return this.many({
+      schema: TaskRowSchema,
+      sql: `SELECT * FROM tasks WHERE container=? AND project_id=? ${cursor ? "AND (created_at < ? OR (created_at = ? AND rowid < ?))" : ""} ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+      params: [
+        containerKey(container),
+        projectId,
+        ...(cursor ? [cursor.created_at, cursor.created_at, cursor.rowid] : []),
+        limit,
+      ],
+    });
+  }
+  defaultTask(container: Container): Task | null {
+    const projectId = this.binding(container);
+    if (!projectId) return null;
+    return this.one({
+      schema: TaskRowSchema,
+      sql: "SELECT tasks.* FROM tasks JOIN default_threads ON tasks.id=default_threads.task_id WHERE default_threads.container=? AND default_threads.project_id=?",
+      params: [containerKey(container), projectId],
+    });
+  }
+  setDefaultTask(task: Task): void {
+    this.db
+      .query("INSERT INTO default_threads (container, project_id, task_id) VALUES (?, ?, ?)")
+      .run(containerKey(task.container), task.projectId, task.id);
+  }
+  configureThread(taskId: TaskId, cwd: string, parentThreadId?: string): void {
+    v.parse(LocalPathSchema, cwd);
+    this.db
+      .query(
+        "INSERT INTO thread_settings (task_id,cwd,parent_thread_id) VALUES (?,?,?) ON CONFLICT(task_id) DO UPDATE SET cwd=excluded.cwd,parent_thread_id=excluded.parent_thread_id",
+      )
+      .run(taskId, cwd, parentThreadId ?? null);
+  }
+  threadSettings(task: Task): ThreadSettings {
+    const row = this.one({
+      schema: v.object({ cwd: LocalPathSchema, parent_thread_id: v.nullable(v.string()) }),
+      sql: "SELECT cwd,parent_thread_id FROM thread_settings WHERE task_id=?",
+      params: [task.id],
+    });
+    const cwd = row?.cwd ?? this.project(task.projectId)?.directory;
+    if (!cwd) throw new Error("Thread project is unavailable");
+    return {
+      cwd,
+      isDefault: this.defaultTask(task.container)?.id === task.id,
+      ...(row?.parent_thread_id ? { parentThreadId: row.parent_thread_id } : {}),
+    };
+  }
+  rememberUser(container: Container, userId: string, name: string): void {
+    this.db
+      .query(
+        "INSERT INTO conversation_users VALUES (?,?,?) ON CONFLICT(container,user_id) DO UPDATE SET name=excluded.name",
+      )
+      .run(containerKey(container), userId, name.slice(0, 128));
+  }
+  userName(container: Container, userId: string): string | undefined {
+    return this.one({
+      schema: v.object({ name: v.string() }),
+      sql: "SELECT name FROM conversation_users WHERE container=? AND user_id=?",
+      params: [containerKey(container), userId],
+    })?.name;
+  }
+  lastUserMessage(taskId: TaskId): MessageId | undefined {
+    return this.one({
+      schema: v.object({ message_id: MessageIdSchema }),
+      sql: "SELECT message_id FROM inputs WHERE task_id=? AND message_id NOT GLOB '*[^0-9]*' ORDER BY sequence DESC LIMIT 1",
+      params: [taskId],
+    })?.message_id;
+  }
   taskAttachment(taskId: TaskId): TaskAttachment | null {
     return this.one({
       schema: TaskAttachmentRowSchema,
@@ -301,9 +397,30 @@ export class Store {
         .run(row.taskId, row.sessionId, row.ownerId, row.sessionFile);
     });
   }
-  /** Only an authorized, explicit replacement may forget a durable session association. */
+  /** A visible writer may survive daemon/socket loss. Only confirmed handoff clears this lease. */
+  visibleWriter(taskId: TaskId): string | undefined {
+    return this.one({
+      schema: v.object({ session_id: v.string() }),
+      sql: "SELECT session_id FROM visible_writers WHERE task_id=?",
+      params: [taskId],
+    })?.session_id;
+  }
+  markVisibleWriter(taskId: TaskId, sessionId: string): void {
+    this.db
+      .query(
+        "INSERT INTO visible_writers VALUES (?,?) ON CONFLICT(task_id) DO UPDATE SET session_id=excluded.session_id",
+      )
+      .run(taskId, sessionId);
+  }
+  clearVisibleWriter(taskId: TaskId): void {
+    this.db.query("DELETE FROM visible_writers WHERE task_id=?").run(taskId);
+  }
+  /** Explicit replacement forgets the association, so revival creates a different file, not a second writer. */
   detachTask(taskId: TaskId): void {
-    this.db.query("DELETE FROM task_attachments WHERE task_id=?").run(taskId);
+    this.atomic(() => {
+      this.clearVisibleWriter(taskId);
+      this.db.query("DELETE FROM task_attachments WHERE task_id=?").run(taskId);
+    });
   }
   taskForMessage({ container, messageId }: { container: Container; messageId: MessageId }): Task | null {
     return this.one({
@@ -324,6 +441,12 @@ export class Store {
     this.db
       .query("INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?)")
       .run(task.id, task.projectId, containerKey(task.container), task.rootId, task.title, task.createdAt);
+  }
+  setTaskRoot(task: Task, rootId: MessageId): void {
+    this.atomic(() => {
+      this.db.query("UPDATE tasks SET root_id=? WHERE id=?").run(rootId, task.id);
+      this.mapMessage({ container: task.container, messageId: rootId, taskId: task.id });
+    });
   }
   mapMessage({ container, messageId, taskId }: { container: Container; messageId: MessageId; taskId: TaskId }): void {
     const existing = this.taskForMessage({ container, messageId });
@@ -487,6 +610,14 @@ export class Store {
       tasks: this.many({
         schema: TaskRowSchema,
         sql: "SELECT * FROM tasks ORDER BY created_at, id",
+      }),
+      threads: this.many({
+        schema: v.object({ task_id: TaskIdSchema, cwd: LocalPathSchema, parent_thread_id: v.nullable(v.string()) }),
+        sql: "SELECT * FROM thread_settings ORDER BY task_id",
+      }),
+      defaults: this.many({
+        schema: v.object({ container: v.string(), project_id: ProjectIdSchema, task_id: TaskIdSchema }),
+        sql: "SELECT * FROM default_threads ORDER BY container, project_id",
       }),
       attachments: this.many({
         schema: TaskAttachmentRowSchema,

@@ -15,7 +15,7 @@ import {
 } from "../domain.ts";
 import type { AgentPort, AttachmentIdentity, AttachmentRequest, BridgeFrontend, SessionBackend } from "../frontend.ts";
 import { log } from "../log.ts";
-import { LocalPathSchema, type Notification, NotificationSchema } from "../protocol.ts";
+import { LocalPathSchema, type Notification, NotificationSchema, type Operation } from "../protocol.ts";
 import { Router } from "../router.ts";
 import type { BridgeServer } from "../server.ts";
 import type { Store } from "../store.ts";
@@ -26,6 +26,7 @@ import { TelegramAttachmentError, TelegramDeliveryUnknown, TelegramError } from 
 import { collectTelegramFileInfos } from "./media.ts";
 import { type BotIdentity, type TelegramMessage, TelegramMessageSchema, type TelegramUpdate } from "./schemas.ts";
 import { TelegramSession } from "./session.ts";
+import { TelegramThreadOperations, ThreadOperationError } from "./threads.ts";
 
 export interface NormalizedTelegram {
   message: IncomingMessage;
@@ -121,7 +122,13 @@ export class TelegramFrontend implements BridgeFrontend {
   private closed = false;
   private readonly lifetime = new AbortController();
   private readonly jobs = new Set<Promise<unknown>>();
-  private readonly starts = new Map<TaskId, { token: string; cancelled: boolean }>();
+  private readonly starts = new Map<
+    TaskId,
+    { token: string; cancelled: boolean; pending?: Promise<TelegramSession> }
+  >();
+  private readonly closingThreads = new Map<TaskId, Promise<void>>();
+  private readonly generations = new Map<TaskId, number>();
+  private readonly inputQueues = new Map<TaskId, { generation: number; tail: Promise<void> }>();
   private readonly albums = new Map<string, { taskId: TaskId; authorId: string; expiresAt: number }>();
   readonly identity: { id: string; label: string };
   readonly mode: "setup" | "routing";
@@ -150,9 +157,29 @@ export class TelegramFrontend implements BridgeFrontend {
     return this.store.statistics(this.transportId);
   }
   error(error: unknown): { message: string; unknownOutcome?: boolean } | undefined {
+    if (error instanceof ThreadOperationError) return { message: error.message };
     if (error instanceof TelegramDeliveryUnknown) return { message: error.message, unknownOutcome: true };
     if (error instanceof TelegramError || error instanceof TelegramAttachmentError) return { message: error.message };
     return undefined;
+  }
+  threadOperation(
+    identity: AttachmentIdentity,
+    operation: Operation,
+    body: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    return new TelegramThreadOperations({
+      store: this.store,
+      backend: this.backend,
+      server: this.server,
+      client: this.client,
+      starts: this.starts,
+      closingThreads: this.closingThreads,
+      jobs: this.jobs,
+      closed: () => this.closed,
+      enqueueInput: (task, deliver) => this.enqueueInput(task, deliver),
+      cancelSession: (id) => this.cancelSession(id),
+    }).threadOperation(identity, operation, body, signal);
   }
   async notify(notification: Notification): Promise<void> {
     const { userId, text } = v.parse(NotificationSchema, notification);
@@ -188,6 +215,10 @@ export class TelegramFrontend implements BridgeFrontend {
         const start = this.starts.get(taskId);
         if (!start || start.cancelled || start.token !== request.attachmentToken)
           throw new Error("This managed session startup was cancelled.");
+        if (this.store.visibleWriter(taskId))
+          throw new Error(
+            "The visible session writer has not confirmed handoff. Reattach it and disconnect cleanly, or /release to start a different saved session.",
+          );
       }
       if (!request.sessionFile) throw new Error("Conversations require an exact saved session file.");
       const task = this.store.task(taskId);
@@ -197,8 +228,8 @@ export class TelegramFrontend implements BridgeFrontend {
       const project = this.store.project(task.projectId);
       if (this.store.binding(task.container) !== task.projectId || !project)
         throw new Error("This thread's project is no longer bound.");
-      if (!request.cwd || realpathSync(request.cwd) !== realpathSync(project.directory))
-        throw new Error("Pi cwd must match the thread's bound project directory.");
+      if (!task || !request.cwd || realpathSync(request.cwd) !== realpathSync(this.store.threadSettings(task).cwd))
+        throw new Error("Pi cwd must match the thread's saved working directory.");
       const attached = this.store.taskAttachment(taskId);
       if (attached && (attached.ownerId !== ownerId || attached.sessionId !== request.sessionId))
         throw new Error("Thread is bound to another Pi session or owner. Its attachment owner must /release it first.");
@@ -211,13 +242,20 @@ export class TelegramFrontend implements BridgeFrontend {
   }
   bind(request: AttachmentRequest, identity: AttachmentIdentity): void {
     if (request.attachmentToken !== undefined) this.authorize(request);
-    if (identity.routeId?.startsWith("task_"))
+    if (identity.routeId?.startsWith("task_")) {
       this.store.attachTask({
         taskId: v.parse(TaskIdSchema, identity.routeId),
         sessionId: request.sessionId,
         sessionFile: v.parse(LocalPathSchema, request.sessionFile),
         ownerId: identity.userId,
       });
+      if (request.attachmentToken === undefined)
+        this.store.markVisibleWriter(v.parse(TaskIdSchema, identity.routeId), request.sessionId);
+    }
+  }
+  disconnected(identity: AttachmentIdentity, quiesced: boolean): void {
+    if (quiesced && identity.routeId?.startsWith("task_"))
+      this.store.clearVisibleWriter(v.parse(TaskIdSchema, identity.routeId));
   }
   open(identity: AttachmentIdentity, agent: AgentPort): TelegramSession {
     const report = (error: unknown) =>
@@ -266,6 +304,7 @@ export class TelegramFrontend implements BridgeFrontend {
         },
       },
       this.bot.username,
+      { id: taskId, explicit: true },
     );
   }
   private releaseTask(taskId: TaskId, ownerId: string): string {
@@ -276,12 +315,35 @@ export class TelegramFrontend implements BridgeFrontend {
     this.store.detachTask(taskId);
     return `Released ${taskId}. Attach deliberately with /bot-connect ${taskId} [owner ID]. Earlier inputs will not be replayed.`;
   }
-  private cancelSession(taskId: TaskId): void {
+  private cancelSession(taskId: TaskId): Promise<void> {
+    // Fence even inputs waiting for an earlier shutdown, before their startup token exists.
+    this.generations.set(taskId, (this.generations.get(taskId) ?? 0) + 1);
+    this.inputQueues.delete(taskId);
     const start = this.starts.get(taskId);
     if (start) start.cancelled = true;
     this.starts.delete(taskId);
-    this.server?.detachRoute(taskId);
-    void this.backend.closeRoute(taskId).catch(() => {});
+    const existing = this.closingThreads.get(taskId);
+    if (existing) return existing;
+    const peer = this.server?.attachment(taskId);
+    const unconfirmedWriter = !peer && this.store.visibleWriter(taskId);
+    const closing = Promise.resolve()
+      .then(async () => {
+        if (unconfirmedWriter)
+          throw new Error(
+            "The visible session writer has not confirmed handoff. Reattach it and stop cleanly, or /release to start a different saved session.",
+          );
+        // Visible hosts also own a live JSONL writer: stop it before allowing managed revival.
+        if (peer && this.server?.attachment(taskId) === peer) await this.server.inspectAgent(taskId, "abort");
+        if (this.server?.attachment(taskId) === peer) this.server?.detachRoute(taskId, true);
+        await this.backend.closeRoute(taskId);
+      })
+      .finally(() => {
+        if (this.closingThreads.get(taskId) === closing) this.closingThreads.delete(taskId);
+      });
+    this.closingThreads.set(taskId, closing);
+    this.jobs.add(closing);
+    void closing.finally(() => this.jobs.delete(closing)).catch(() => {});
+    return closing;
   }
   private async deliverPrivate(update: TelegramUpdate): Promise<boolean> {
     const message = update.message ?? update.edited_message;
@@ -319,12 +381,57 @@ export class TelegramFrontend implements BridgeFrontend {
       );
     return true;
   }
-  private startSession(task: Task, update: TelegramUpdate, empty = false): void {
-    const start = this.starts.get(task.id) ?? { token: randomUUID(), cancelled: false };
+  private enqueueInput(task: Task, deliver: (frontend: TelegramSession) => void): Promise<void> {
+    const generation = this.generations.get(task.id) ?? 0;
+    const previous = this.inputQueues.get(task.id);
+    const check = () => {
+      if (generation !== (this.generations.get(task.id) ?? 0))
+        throw new Error("This conversation startup was cancelled.");
+      if (this.closed || this.store.binding(task.container) !== task.projectId)
+        throw new Error("The conversation is no longer bound.");
+    };
+    const queue = { generation, tail: Promise.resolve() };
+    queue.tail = (previous?.generation === generation ? previous.tail.catch(() => {}) : Promise.resolve()).then(
+      async () => {
+        check();
+        const frontend = await this.ensureSession(task);
+        check();
+        if (!frontend.isLive) throw new Error("The conversation disconnected before delivery.");
+        deliver(frontend);
+      },
+    );
+    this.inputQueues.set(task.id, queue);
+    this.jobs.add(queue.tail);
+    void queue.tail
+      .finally(() => {
+        this.jobs.delete(queue.tail);
+        if (this.inputQueues.get(task.id) === queue) this.inputQueues.delete(task.id);
+      })
+      .catch(() => {});
+    return queue.tail;
+  }
+  private async ensureSession(task: Task): Promise<TelegramSession> {
+    const generation = this.generations.get(task.id) ?? 0;
+    const closing = this.closingThreads.get(task.id);
+    if (closing) await closing;
+    if (generation !== (this.generations.get(task.id) ?? 0))
+      throw new Error("This conversation startup was cancelled.");
+    if (this.closed || this.store.binding(task.container) !== task.projectId)
+      throw new Error("The conversation is no longer bound.");
+    const live = this.server?.attachment(task.id)?.frontend;
+    if (live instanceof TelegramSession && live.isLive) return live;
+    if (this.store.visibleWriter(task.id))
+      throw new Error(
+        "The visible session writer has not confirmed handoff. Reattach it and disconnect cleanly, or /release to start a different saved session.",
+      );
+    const existing = this.starts.get(task.id);
+    if (existing?.pending) return existing.pending;
+    const start: { token: string; cancelled: boolean; pending?: Promise<TelegramSession> } = {
+      token: randomUUID(),
+      cancelled: false,
+    };
     this.starts.set(task.id, start);
-    const job = (async () => {
-      const project = this.store.project(task.projectId);
-      if (!project) throw new Error("The conversation's project is unavailable.");
+    start.pending = (async () => {
       const association = this.store.taskAttachment(task.id);
       const authorId = this.store.taskAuthor(task.id);
       const ownerId =
@@ -333,14 +440,18 @@ export class TelegramFrontend implements BridgeFrontend {
           ? authorId
           : this.config.ownerTelegramUserIds[0]);
       if (!ownerId) throw new Error("No bot owner is configured.");
+      const settings = this.store.threadSettings(task);
       const saved = await this.backend.open({
         routeId: task.id,
-        cwd: project.directory,
+        cwd: settings.cwd,
         ownerId,
         name: task.title || "Telegram conversation",
         sessionId: association?.sessionId,
         sessionFile: association?.sessionFile,
         attachmentToken: start.token,
+        explicit: true,
+        isDefault: settings.isDefault,
+        parentThreadId: settings.parentThreadId,
       });
       if (
         this.closed ||
@@ -348,11 +459,26 @@ export class TelegramFrontend implements BridgeFrontend {
         this.starts.get(task.id) !== start ||
         this.store.binding(task.container) !== task.projectId
       )
-        return;
+        throw new Error("This conversation startup was cancelled.");
       this.store.attachTask({ taskId: task.id, ownerId, ...saved });
       const frontend = this.server?.attachment(task.id)?.frontend;
       if (!(frontend instanceof TelegramSession) || !frontend.isLive)
         throw new Error("The session disconnected before input was delivered.");
+      return frontend;
+    })();
+    const pending = start.pending;
+    this.jobs.add(pending);
+    void pending
+      .finally(() => {
+        this.jobs.delete(pending);
+        if (this.starts.get(task.id) === start) start.pending = undefined;
+      })
+      .catch(() => {});
+    return pending;
+  }
+  private startSession(task: Task, update: TelegramUpdate, empty = false): void {
+    const generation = this.generations.get(task.id) ?? 0;
+    const job = this.enqueueInput(task, (frontend) => {
       if (empty)
         this.store.enqueue({
           transportId: this.transportId,
@@ -362,12 +488,13 @@ export class TelegramFrontend implements BridgeFrontend {
           text: "New conversation ready. Reply with your request.",
         });
       else frontend.receive(update);
-    })().catch((error) => {
+    }).catch((error) => {
       if (
         this.closed ||
-        start.cancelled ||
-        this.starts.get(task.id) !== start ||
-        this.store.binding(task.container) !== task.projectId
+        this.closingThreads.has(task.id) ||
+        this.store.binding(task.container) !== task.projectId ||
+        generation !== (this.generations.get(task.id) ?? 0) ||
+        (error instanceof Error && error.message === "This conversation startup was cancelled.")
       )
         return;
       this.store.enqueue({
@@ -427,12 +554,14 @@ export class TelegramFrontend implements BridgeFrontend {
             this.config.ownerTelegramUserIds.includes(String(raw.from.id)),
         )
       : null;
-    if (normalized && raw?.chat.type === "private" && normalized.message.route.kind === "ignore") {
-      const projectId = this.store.binding(normalized.message.container);
-      const latest = this.store.tasksFor(normalized.message.container).find((task) => task.projectId === projectId);
-      normalized.message.route = latest
-        ? { kind: "thread", threadId: latest.rootId }
-        : { kind: "start", rootId: normalized.message.id };
+    if (
+      normalized &&
+      raw?.chat.type === "private" &&
+      isControlMessage(raw) &&
+      normalized.message.route.kind === "ignore"
+    ) {
+      const main = this.store.defaultTask(normalized.message.container);
+      if (main) normalized.message.route = { kind: "thread", threadId: main.rootId };
     }
     let deliver: { frontend: TelegramSession; update: TelegramUpdate } | undefined;
     let start: { task: Task; update: TelegramUpdate; empty: boolean } | undefined;
@@ -440,6 +569,12 @@ export class TelegramFrontend implements BridgeFrontend {
       let result: RouteResult | null = null;
       if (normalized) {
         const { message, command } = normalized;
+        if (raw?.from)
+          this.store.rememberUser(
+            message.container,
+            String(raw.from.id),
+            raw.from.username ? `@${raw.from.username}` : raw.from.first_name || String(raw.from.id),
+          );
         let reply: string | null = null;
         let taskId: TaskId | null = null;
         const fresh = command?.kind === "new";
@@ -544,6 +679,17 @@ export class TelegramFrontend implements BridgeFrontend {
           const albumTask = album && album.authorId === message.authorId ? this.store.task(album.taskId) : null;
           if (!mappedParent && albumTask && containerKey(albumTask.container) === containerKey(message.container))
             message.route = { kind: "thread", threadId: albumTask.rootId };
+          const unknownBotReply = !!parentId && !mappedParent && raw?.reply_to_message?.from?.id === this.bot.id;
+          if (
+            !fresh &&
+            !control &&
+            !mappedParent &&
+            !albumTask &&
+            !unknownBotReply &&
+            this.store.binding(message.container)
+          ) {
+            message.route = { kind: "default" };
+          }
           result =
             album && (album.authorId !== message.authorId || (mappedParent && mappedParent.id !== album.taskId))
               ? { kind: "ignored", reason: "chatter" }
@@ -562,7 +708,13 @@ export class TelegramFrontend implements BridgeFrontend {
             }
             taskId = result.task.id;
             const frontend = this.server?.attachment(result.task.id)?.frontend;
-            if (frontend instanceof TelegramSession && frontend.isLive && raw) {
+            if (
+              control &&
+              frontend instanceof TelegramSession &&
+              frontend.isLive &&
+              raw &&
+              !this.closingThreads.has(result.task.id)
+            ) {
               deliver = {
                 frontend,
                 update: {

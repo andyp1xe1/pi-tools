@@ -9,9 +9,9 @@ export type TaskId = v.InferOutput<typeof TaskIdSchema>;
 export type MessageId = v.InferOutput<typeof MessageIdSchema>;
 export type UserId = v.InferOutput<typeof UserIdSchema>;
 
-/** Telegram: chat and forum topic. Discord: guild and parent channel. */
+/** Project space: Telegram chat/topic, Discord guild/channel, or Slack workspace/channel. */
 export const ContainerSchema = v.object({
-  platform: v.picklist(["telegram", "discord"]),
+  platform: v.picklist(["telegram", "discord", "slack"]),
   spaceId: v.pipe(v.string(), v.nonEmpty()),
   channelId: v.pipe(v.string(), v.nonEmpty()),
 });
@@ -26,6 +26,7 @@ export type Project = v.InferOutput<typeof ProjectSchema>;
 export type Binding = Container & { projectId: ProjectId };
 
 export const MessageRouteSchema = v.variant("kind", [
+  v.object({ kind: v.literal("default") }),
   v.object({ kind: v.literal("start"), rootId: MessageIdSchema, parentId: v.optional(MessageIdSchema) }),
   v.object({ kind: v.literal("reply"), parentId: MessageIdSchema }),
   v.object({ kind: v.literal("thread"), threadId: MessageIdSchema }),

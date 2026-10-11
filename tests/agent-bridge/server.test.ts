@@ -102,7 +102,7 @@ async function groupSetup(owners=["7"]){
  h.store.bind({container:{platform:"telegram",spaceId:"-1001",channelId:"42"},projectId:project.id});
  h.store.bind({container:{platform:"telegram",spaceId:"-1001",channelId:"43"},projectId:project.id});
  const a=await h.adapter.accept(group(10,"@existing_bot A",undefined,7,42,{entities:[{type:"mention",offset:0,length:13}]}));
- const b=await h.adapter.accept(group(11,"@existing_bot B",undefined,7,42,{entities:[{type:"mention",offset:0,length:13}]}));
+ const b=await h.adapter.accept(group(11,"/new B"));
  if(a?.kind!=="routed"||b?.kind!=="routed")throw new Error("Missing group threads");
  return{...h,a:a.task,b:b.task};
 }
@@ -115,10 +115,12 @@ test("two threads under one owner attach separate sessions; bubbles, menus and u
  expect(a.prompts).toHaveLength(0);expect(b.prompts).toHaveLength(0);
  await h.adapter.accept(group(12,"A input",10));await h.adapter.accept(group(13,"B input",11));
  await until(()=>a.prompts.length===1&&b.prompts.length===1);
- answer(a.client,a.prompts[0]!,"A answer");answer(b.client,b.prompts[0]!,"B answer");
+ answer(a.client,a.prompts[0]!,"private A output");answer(b.client,b.prompts[0]!,"private B output");
+ await a.client.request("replyMessage",{messageId:"12",text:"A answer"});await b.client.request("replyMessage",{messageId:"13",text:"B answer"});
+ expect(h.calls.some(c=>String(c.body.text).startsWith("private"))).toBe(false);
  await until(()=>h.calls.some(c=>c.body.text==="A answer")&&h.calls.some(c=>c.body.text==="B answer"));
  for(const [text,task,requestId] of [["A answer",h.a,12],["B answer",h.b,13]] as const){
-  const call=h.calls.find(c=>c.body.text===text)!;expect(call.body).toMatchObject({chat_id:-1001,message_thread_id:42,reply_parameters:{message_id:requestId,allow_sending_without_reply:false}});
+  const call=h.calls.find(c=>c.body.text===text)!;expect(call.body).toMatchObject({chat_id:"-1001",message_thread_id:42,reply_parameters:{message_id:requestId,allow_sending_without_reply:false}});
   const id=51+h.calls.indexOf(call);expect(h.store.taskForMessage({container:task.container,messageId:v.parse(MessageIdSchema,String(id))})?.id).toBe(task.id);
  }
  const bubble=h.calls.find(c=>c.body.text==="A answer")!;await h.adapter.accept(group(14,"@existing_bot continue",51+h.calls.indexOf(bubble),8,42,{entities:[{type:"mention",offset:0,length:13}]}));
@@ -178,7 +180,7 @@ test("group media albums retain uncaptioned pieces and FIFO without crossing aut
  await h.adapter.accept(group(18,"B photo",11,8,42,{...photo("B")}));
  await until(()=>b.prompts.length===1);expect(a.prompts).toHaveLength(0);
  await Bun.sleep(1300);await until(()=>a.prompts.length===2);
- expect(downloads.sort()).toEqual(["B","one","two"]);expect(a.prompts[0]?.content.filter(c=>c.type==="image-file")).toHaveLength(2);expect(a.prompts[1]?.content[0]).toMatchObject({text:"[telegram] later A"});
+ expect(downloads.sort()).toEqual(["B","one","two"]);expect(a.prompts[0]?.content.filter(c=>c.type==="image-file")).toHaveLength(2);expect(a.prompts[1]?.content[0]).toMatchObject({text:"[telegram user=7 message=13 reply=10]\nlater A"});
  expect(b.prompts[0]?.content.filter(c=>c.type==="image-file")).toHaveLength(1);
  await a.client.disconnect();await h.adapter.accept(group(19,undefined,10,8,42,photo("detached")));await Bun.sleep(30);expect(downloads).not.toContain("detached");
  const restored=await connect(h.path,"pi-A","7",h.a.id,h.root);expect(restored.prompts).toHaveLength(0);await restored.client.disconnect();await b.client.disconnect();
@@ -188,12 +190,12 @@ test("late accepted output cannot map into a released or replacement attachment"
  await h.adapter.accept(group(12,"request",10));await until(()=>a.prompts.length===1);
  const call=h.api.call.bind(h.api);let complete:(()=>void)|undefined;
  h.api.call=async(method,body,options)=>{const result=await call(method,body,options);if(method==="sendMessage"&&body.text==="late accepted bubble")await new Promise<void>(resolve=>complete=resolve);return result;};
- answer(a.client,a.prompts[0]!,"late accepted bubble");await until(()=>!!complete);
+ const sending=a.client.request("replyMessage",{messageId:"12",text:"late accepted bubble"});void sending.catch(()=>{});await until(()=>!!complete);
  const bubble=h.calls.find(c=>c.body.text==="late accepted bubble")!;const bubbleId=51+h.calls.indexOf(bubble);
  await h.adapter.accept(group(13,"/release",10));await until(()=>!a.client.isAttached);
- const replacement=await connect(h.path,"pi-new","7",h.a.id,h.root);complete!();await Bun.sleep(30);
+ const replacement=await connect(h.path,"pi-new","7",h.a.id,h.root);complete!();await expect(sending).rejects.toThrow();await Bun.sleep(30);
  expect(h.store.taskForMessage({container:h.a.container,messageId:v.parse(MessageIdSchema,String(bubbleId))})).toBeNull();
- await h.adapter.accept(group(14,"unmapped reply",bubbleId));expect(replacement.prompts).toHaveLength(0);await replacement.client.disconnect();
+ await h.adapter.accept(group(14,"unmapped reply",bubbleId,7,42,{reply_to_message:{message_id:bubbleId,chat:{id:-1001,type:"supergroup"},is_topic_message:true,message_thread_id:42,from:{id:99,is_bot:true}}}));expect(replacement.prompts).toHaveLength(0);await replacement.client.disconnect();
 });
 test("owner unbind detaches every live conversation in that topic but retains saved associations",async()=>{
  const h=await groupSetup(["7","8"]);
@@ -253,15 +255,15 @@ async function managedSetup(heldNames:string[]=[], owners=["7"]){
 const replyTexts=(h:{store:Store})=>v.parse(v.array(v.object({text:v.string()})),h.store.db.query("SELECT text FROM outbox ORDER BY id").all()).map(row=>row.text);
 const mention=(id:number,text:string,parent?:number)=>group(id,`@existing_bot ${text}`,parent,7,42,{entities:[{type:"mention",offset:0,length:13}]});
 test("managed bind → mention → reply delivers immediately, keeps FIFO, and does not serialize independent sessions",async()=>{
- const h=await managedSetup(["A"]);try{
+ const h=await managedSetup(["Main"]);try{
   await h.adapter.accept(group(1,`/bind ${h.root}`));
-  const a=await h.adapter.accept(mention(10,"A")),b=await h.adapter.accept(mention(11,"B"));
+  const a=await h.adapter.accept(mention(10,"A")),b=await h.adapter.accept(group(11,"/new B"));
   if(a?.kind!=="routed"||b?.kind!=="routed")throw new Error("Missing managed tasks");
   await h.adapter.accept(group(12,"A follow-up",10));
   await until(()=>h.peers.get(b.task.id)?.prompts.length===1);
   expect(h.peers.has(a.task.id)).toBe(false);expect(h.targets).toHaveLength(2);
-  h.release("A");await until(()=>h.peers.get(a.task.id)?.prompts.length===2);
-  expect(h.peers.get(a.task.id)!.prompts.map(prompt=>prompt.content[0])).toEqual([{type:"text",text:"[telegram] A"},{type:"text",text:"[telegram] A follow-up"}]);
+  h.release("Main");await until(()=>h.peers.get(a.task.id)?.prompts.length===2);
+  expect(h.peers.get(a.task.id)!.prompts.map(prompt=>prompt.content[0])).toEqual([{type:"text",text:"[telegram user=7 message=10]\nA"},{type:"text",text:"[telegram user=7 message=12 reply=10]\nA follow-up"}]);
   expect(h.store.taskAttachment(a.task.id)?.sessionFile).toBe(join(h.root,`native-${a.task.id}.jsonl`));
   expect(replyTexts(h).every(text=>!text.includes("/bot-connect"))).toBe(true);
  }finally{await h.stop();}
@@ -273,7 +275,7 @@ test("managed reconnect resumes the exact persisted session identity and file, w
   const saved=h.store.taskAttachment(a.task.id)!;await h.peers.get(a.task.id)!.client.disconnect();
   await h.adapter.accept(group(11,"after restart",10));await until(()=>h.targets.length===2&&h.peers.get(a.task.id)?.client.isAttached===true&&h.peers.get(a.task.id)?.prompts.length===1);
   expect(h.targets[1]).toMatchObject({sessionId:saved.sessionId,sessionFile:saved.sessionFile});
-  expect(h.peers.get(a.task.id)!.prompts[0]?.content[0]).toEqual({type:"text",text:"[telegram] after restart"});
+  expect(h.peers.get(a.task.id)!.prompts[0]?.content[0]).toEqual({type:"text",text:"[telegram user=7 message=11 reply=10]\nafter restart"});
   expect(h.store.taskAttachment(a.task.id)).toEqual(saved);
  }finally{await h.stop();}
 });
@@ -285,7 +287,7 @@ test("managed /new creates a separate saved conversation instead of resetting an
   await until(()=>h.peers.get(b.task.id)?.prompts.length===1);
   expect(b.task.id).not.toBe(a.task.id);expect(h.store.taskAttachment(a.task.id)).toEqual(old);
   expect(h.peers.get(a.task.id)!.commands).toHaveLength(0);
-  expect(h.peers.get(b.task.id)!.prompts[0]?.content[0]).toEqual({type:"text",text:"[telegram] fresh request"});
+  expect(h.peers.get(b.task.id)!.prompts[0]?.content[0]).toEqual({type:"text",text:"[telegram user=7 message=11 reply=10]\nfresh request"});
   const c=await h.adapter.accept(group(12,"/new"));if(c?.kind!=="routed")throw new Error("Missing empty task");
   await until(()=>!!h.store.taskAttachment(c.task.id)?.sessionFile);
   expect(h.peers.get(c.task.id)!.prompts).toHaveLength(0);
@@ -302,7 +304,7 @@ test("managed topic commands report their scope explicitly and controls select o
   await h.adapter.accept(group(11,"/model"));await until(()=>h.peers.get(a.task.id)!.commands.length===1);
   await h.adapter.accept(group(12,"/status"));
   expect(replyTexts(h).some(text=>text.includes("Backend: native Pi SDK\nActive sessions: 1"))).toBe(true);
-  const b=await h.adapter.accept(mention(13,"B"));if(b?.kind!=="routed")throw new Error("Missing second task");
+  const b=await h.adapter.accept(group(13,"/new B"));if(b?.kind!=="routed")throw new Error("Missing second task");
   await until(()=>h.peers.get(b.task.id)?.prompts.length===1);
   await h.adapter.accept(group(14,"/stop"));
   expect(replyTexts(h).some(text=>text.includes("Reply to the conversation you want to control with /stop"))).toBe(true);
@@ -310,9 +312,9 @@ test("managed topic commands report their scope explicitly and controls select o
  }finally{await h.stop();}
 });
 test("managed startup finishing after /unbind cannot attach or deliver stale input",async()=>{
- const h=await managedSetup(["A"]);try{
+ const h=await managedSetup(["Main"]);try{
   h.bind();const a=await h.adapter.accept(mention(10,"A"));if(a?.kind!=="routed")throw new Error("Missing task");
-  await h.adapter.accept(group(11,"/unbind"));h.bind();h.release("A");await until(()=>h.targets.length===1);
+  await h.adapter.accept(group(11,"/unbind"));h.bind();h.release("Main");await until(()=>h.targets.length===1);
   await Bun.sleep(30);expect(h.server.inspect().sessions).toHaveLength(0);expect(h.peers.get(a.task.id)?.prompts.length??0).toBe(0);
   const target=h.targets[0]!;
   await expect(connect(h.path,`late-${a.task.id}`,target.ownerId,a.task.id,h.root,target.attachmentToken)).rejects.toThrow("startup was cancelled");
@@ -320,7 +322,7 @@ test("managed startup finishing after /unbind cannot attach or deliver stale inp
  }finally{await h.stop();}
 });
 test("release during startup fences late managed attachment before it can recreate a saved association",async()=>{
- const h=await managedSetup(["A"]);try{
+ const h=await managedSetup(["Main"]);try{
   h.bind();const a=await h.adapter.accept(mention(10,"A"));if(a?.kind!=="routed")throw new Error("Missing task");
   const target=h.targets[0]!;await h.adapter.accept(group(11,"/release",10));
   await expect(connect(h.path,`late-${a.task.id}`,target.ownerId,a.task.id,h.root,target.attachmentToken)).rejects.toThrow("startup was cancelled");
@@ -337,7 +339,7 @@ test("/stop cancels slow frontend media and album debounce without disabling fut
   await h.adapter.accept(group(14,"album",10,7,42,{photo:[{file_id:"album"}],media_group_id:"cancelled-album"}));
   await h.adapter.accept(group(15,"/stop",10));await until(()=>peer.commands.length===2);
   await h.adapter.accept(group(16,"fresh input",10));await until(()=>peer.prompts.length===1);
-  expect(peer.prompts[0]?.content[0]).toEqual({type:"text",text:"[telegram] fresh input"});
+  expect(peer.prompts[0]?.content[0]).toEqual({type:"text",text:"[telegram user=7 message=16 reply=10]\nfresh input"});
   await Bun.sleep(1300);expect(peer.prompts).toHaveLength(1);
  }finally{finish?.(join(h.root,"slow.jpg"));await peer.client.disconnect();}
 });

@@ -18,6 +18,23 @@ export class Router {
       let task: Task | null;
       let created = false;
       switch (message.route.kind) {
+        case "default": {
+          task = this.store.defaultTask(message.container);
+          if (!task) {
+            task = {
+              id: v.parse(TaskIdSchema, `task_${randomUUID()}`),
+              projectId,
+              container: message.container,
+              rootId: message.id,
+              title: "Main",
+              createdAt: new Date().toISOString(),
+            };
+            this.store.createTask(task);
+            this.store.setDefaultTask(task);
+            created = true;
+          }
+          break;
+        }
         case "start": {
           const rootId = message.route.rootId;
           // A re-mention inside a mapped reply chain continues that independent session.

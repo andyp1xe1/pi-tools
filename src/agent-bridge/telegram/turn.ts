@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { userEnvelope } from "../envelope.ts";
 import type { PreparedPrompt } from "../protocol.ts";
 import type { TelegramClient } from "./client.ts";
 import { TELEGRAM_PREFIX, TEMP_DIR } from "./constants.ts";
@@ -49,6 +50,7 @@ export async function createTelegramTurn(
   client: TelegramClient,
   messages: TelegramMessage[],
   signal?: AbortSignal,
+  explicit = false,
 ): Promise<PendingTelegramTurn> {
   const firstMessage = messages[0];
   if (!firstMessage) throw new Error("Missing Telegram message for turn creation");
@@ -58,7 +60,25 @@ export async function createTelegramTurn(
     .join("\n\n");
   signal?.throwIfAborted();
   const files = await downloadTelegramFiles(client, messages, signal);
-  let prompt = rawText ? `${TELEGRAM_PREFIX} ${rawText}` : TELEGRAM_PREFIX;
+  const envelope = explicit
+    ? messages
+        .map((message) =>
+          userEnvelope({
+            platform: "telegram",
+            userId: String(message.from?.id ?? "unknown"),
+            name: message.from?.username ? `@${message.from.username}` : message.from?.first_name,
+            messageId: String(message.message_id),
+            ...(message.reply_to_message &&
+            !message.reply_to_message.forum_topic_created &&
+            message.reply_to_message.message_id !== message.message_thread_id
+              ? { replyToId: String(message.reply_to_message.message_id) }
+              : {}),
+          }),
+        )
+        .join("\n")
+    : TELEGRAM_PREFIX;
+  let prompt = rawText ? `${envelope}\n${rawText}` : envelope;
+  if (!explicit && rawText) prompt = `${TELEGRAM_PREFIX} ${rawText}`;
 
   for (const file of files) {
     if (!file.isVoice) continue;

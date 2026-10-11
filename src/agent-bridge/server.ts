@@ -91,9 +91,10 @@ export class BridgeServer {
     this.jobs.add(task);
     void task.finally(() => this.jobs.delete(task)).catch(() => {});
   }
-  private release(peer: Peer): void {
+  private release(peer: Peer, quiesced = false): void {
     if (this.peers.get(peer.routeId) !== peer) return;
     this.peers.delete(peer.routeId);
+    this.transport.disconnected?.(peer.identity, quiesced);
     peer.controller.abort();
     for (const call of peer.agentCalls.values()) {
       clearTimeout(call.timer);
@@ -211,7 +212,7 @@ export class BridgeServer {
         peer?.requests.get(frame.id)?.abort();
         return;
       case "detach":
-        if (peer) this.release(peer);
+        if (peer) this.release(peer, frame.quiesced === true);
         socket.end(`${JSON.stringify({ type: "detached" })}\n`);
         return;
       case "status":
@@ -304,6 +305,18 @@ export class BridgeServer {
         try {
           let result: unknown;
           switch (frame.operation) {
+            case "listThreads":
+            case "peekThread":
+            case "createThread":
+            case "messageThread":
+            case "stopThread":
+            case "replyMessage": {
+              if (!this.transport.threadOperation)
+                throw new Error("This frontend does not support conversation tools.");
+              const body = v.parse(OperationBodies[frame.operation], frame.body);
+              result = await this.transport.threadOperation(peer.identity, frame.operation, body, signal);
+              break;
+            }
             case "sendAttachment": {
               const body = v.parse(OperationBodies.sendAttachment, frame.body);
               await peer.frontend.sendAttachment(body, signal);
@@ -344,14 +357,25 @@ export class BridgeServer {
       uptimeSeconds: Math.max(0, Math.floor((Date.now() - this.startedAt) / 1000)),
     };
   }
+  /** Bounded reverse RPC for live conversation inspection, without waking an agent. */
+  inspectAgent<K extends AgentOperation>(
+    routeId: string,
+    operation: K,
+    body: Record<string, unknown> = {},
+  ): Promise<v.InferOutput<(typeof AgentOperationResults)[K]>> {
+    const peer = this.peers.get(routeId);
+    if (!peer || peer.socket.destroyed || peer.controller.signal.aborted)
+      return Promise.reject(new Error("Thread is not attached"));
+    return this.agentCall(peer, operation, body);
+  }
   attachment(routeId: string): FrontendPeer | undefined {
     const peer = this.peers.get(routeId);
     return peer && !peer.socket.destroyed && !peer.controller.signal.aborted ? peer : undefined;
   }
-  detachRoute(routeId: string): void {
+  detachRoute(routeId: string, quiesced = false): void {
     const peer = this.peers.get(routeId);
     if (!peer) return;
-    this.release(peer);
+    this.release(peer, quiesced);
     peer.socket.end(`${JSON.stringify({ type: "detached" })}\n`);
   }
   inspect(): Extract<ServerFrame, { type: "status" }> {

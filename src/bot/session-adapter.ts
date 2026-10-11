@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import * as v from "valibot";
 import { BridgeClient, registerBridgeTranscription } from "../agent-bridge/client.ts";
 import {
+  AgentOperationBodies,
   type AgentOutput,
   type AgentRequest,
   type ServerFrame,
@@ -12,6 +13,7 @@ import { registerAudioTranscriptionTool } from "../audio-transcription/index.ts"
 import { handleBotRequest } from "./controls.ts";
 import { BotDelivery } from "./delivery.ts";
 import { preparePrompt } from "./messages.ts";
+import { registerThreadTools, THREAD_TOOL_NAMES, type ThreadToolConnection, threadHistory } from "./thread-tools.ts";
 import { registerBotTools, type ToolConnection } from "./tools.ts";
 
 const SYSTEM_PROMPT_SUFFIX = `
@@ -57,6 +59,8 @@ export class BotSessionAdapter {
   private generation = 0;
   private connection?: BridgeClient;
   private identity?: Attached;
+  private attachmentContext?: ExtensionContext;
+  private attachmentWaitForIdle?: () => Promise<void>;
   private connectingPromise?: Promise<void>;
   private disconnectingPromise?: Promise<void>;
   private lastConnectionError?: string;
@@ -66,6 +70,7 @@ export class BotSessionAdapter {
   private aborting = false;
   private compacting = false;
   private releaseTranscription?: () => void;
+  private threadToolsRegistered = false;
   private readonly queuedActions = new Set<ReturnType<typeof setTimeout>>();
   private readonly mutations = new Set<Promise<unknown>>();
   private readonly delivery: BotDelivery;
@@ -146,23 +151,50 @@ export class BotSessionAdapter {
   }
   private output(event: AgentOutput, ctx: ExtensionContext): void {
     if (!this.isCurrentRuntime() || !this.connection?.isAttached) return;
+    if (this.identity?.routeId?.startsWith("task_") && ["text-start", "text-update", "text-end"].includes(event.type))
+      return;
     try {
       this.connection.output(event);
     } catch (error) {
       this.updateStatus(ctx, this.errorMessage(error));
     }
   }
-  private captureConnection(): ToolConnection {
+  private setThreadToolsActive(active: boolean): void {
+    if (active && !this.threadToolsRegistered) {
+      registerThreadTools(this.pi, () => {
+        if (!this.identity?.routeId?.startsWith("task_")) throw new Error("Thread tools require a task attachment");
+        return this.captureConnection();
+      });
+      this.threadToolsRegistered = true;
+    }
+    // Real Pi provides these; lightweight adapter hosts may omit tool activation APIs.
+    if (this.threadToolsRegistered && this.pi.getActiveTools && this.pi.setActiveTools) {
+      const other = this.pi.getActiveTools().filter((name) => !THREAD_TOOL_NAMES.includes(name));
+      this.pi.setActiveTools(active ? [...other, ...THREAD_TOOL_NAMES] : other);
+    }
+  }
+  private captureConnection(): ToolConnection & ThreadToolConnection {
     const connection = this.connection;
     const generation = this.generation;
     if (!this.isCurrentRuntime() || !connection?.isAttached)
       throw new Error("Agent bridge is not attached. Run /bot-connect first.");
     const check = (): void => {
-      if (generation !== this.generation || !this.isCurrentRuntime() || !connection.isAttached)
+      if (
+        generation !== this.generation ||
+        !this.isCurrentRuntime() ||
+        this.connection !== connection ||
+        !connection.isAttached
+      )
         throw new Error("Agent bridge attachment changed");
     };
     return {
       check,
+      request: async (operation, body, signal) => {
+        check();
+        const result = await connection.request(operation, body, signal);
+        check();
+        return result;
+      },
       sendAttachment: async (body, signal) => {
         check();
         await connection.sendAttachment(body, signal);
@@ -197,24 +229,66 @@ export class BotSessionAdapter {
     this.queuedActions.clear();
     this.delivery.stop();
     this.identity = undefined;
+    this.attachmentContext = undefined;
+    this.attachmentWaitForIdle = undefined;
+    this.setThreadToolsActive(false);
   }
-  private async disconnect(): Promise<void> {
+  private async stopTaskWriter(ctx: ExtensionContext, waitForIdle?: () => Promise<void>): Promise<void> {
+    this.aborting = true;
+    // In Pi's TUI this also clears native steering/follow-up/compaction queues
+    // (restoring text to the editor). The raw SDK fallback does NOT clear them.
+    // Abort even while idle: queued bot input must not survive the handoff.
+    const aborted = ctx.abort();
+    if (ctx.hasPendingMessages?.())
+      throw new Error("Cannot safely detach task: Pi still has queued messages after abort");
+    // Capture the idle waiter synchronously, before abort can finish a run and
+    // flip isIdle inside agent_settled while other handlers are still draining.
+    if (waitForIdle) await Promise.all([aborted, waitForIdle()]);
+    else {
+      await aborted;
+      // Event contexts have no waitForIdle API. Observe Pi's idle state across
+      // timer ticks, not from inside our agent_settled hook. This is local
+      // quiescence only; socket loss still needs a daemon handoff barrier.
+      while (!ctx.isIdle()) await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    if (!ctx.isIdle() || ctx.hasPendingMessages?.()) throw new Error("Cannot safely detach task: Pi has not settled");
+  }
+  private async disconnect(graceful = true): Promise<void> {
     if (this.disconnectingPromise) return this.disconnectingPromise;
     const connection = this.connection;
+    const task = this.identity?.routeId?.startsWith("task_");
+    const ctx = this.attachmentContext;
+    const waitForIdle = this.attachmentWaitForIdle;
     this.connection = undefined;
     this.invalidateAttachment();
     this.disconnectingPromise = (async () => {
-      await Promise.all([connection?.disconnect(), this.waitForMutations()]);
+      // Do not release the saved task file to the daemon until its visible
+      // writer and queues have stopped. Standalone DM detach stays non-aborting.
+      if (task && ctx) {
+        await this.stopTaskWriter(ctx, waitForIdle);
+        await this.waitForMutations();
+        if (!ctx.isIdle() || ctx.hasPendingMessages?.())
+          throw new Error("Cannot safely detach task: Pi has not settled");
+        // Only a live, graceful task detach can confirm release of the daemon's
+        // persistent visible-writer lease. EOF cleanup never sends confirmation.
+        await connection?.disconnect(graceful && connection.isAttached ? { quiesced: true } : undefined);
+      } else {
+        await Promise.all([connection?.disconnect(), this.waitForMutations()]);
+      }
       await this.connectingPromise?.catch(() => undefined);
     })();
-    try {
-      await this.disconnectingPromise;
-    } finally {
-      this.disconnectingPromise = undefined;
-    }
+    // A failed task stop remains a rejected handoff barrier: never reconnect
+    // or announce release while the old host may still write this saved file.
+    await this.disconnectingPromise;
+    this.disconnectingPromise = undefined;
   }
 
-  private async attach(ctx: ExtensionContext, userId?: string, routeId?: string): Promise<void> {
+  private async attach(
+    ctx: ExtensionContext,
+    userId?: string,
+    routeId?: string,
+    waitForIdle?: () => Promise<void>,
+  ): Promise<void> {
     if (!ctx.sessionManager.getSessionFile()) {
       ctx.ui.notify("Bot conversations require a saved Pi session. Restart Pi without --no-session.", "warning");
       return;
@@ -241,6 +315,9 @@ export class BotSessionAdapter {
         )
           throw new Error("Agent bridge attachment identity changed");
         this.identity = frame;
+        this.attachmentContext = ctx;
+        this.attachmentWaitForIdle = waitForIdle;
+        this.setThreadToolsActive(!!frame.routeId?.startsWith("task_"));
         this.setOwnerIntent(frame.userId, frame.routeId, ctx.sessionManager.getSessionId());
         const client = this.captureConnection();
         this.releaseTranscription = registerBridgeTranscription(
@@ -265,7 +342,13 @@ export class BotSessionAdapter {
         if (generation !== this.generation) return;
         const currentRuntime = this.isCurrentRuntime();
         if (currentRuntime) this.setOwnerIntent();
-        this.invalidateAttachment();
+        // BridgeClient cannot await this callback on EOF. Stop the local task
+        // immediately and serialize any reconnect behind completion. The daemon
+        // retains its writer lease until a later confirmed graceful handoff.
+        const closing = this.disconnect(false);
+        void closing.catch((failure) => {
+          if (this.isCurrentRuntime()) this.updateStatus(ctx, this.errorMessage(failure));
+        });
         if (!currentRuntime) return;
         this.lastConnectionError = error.message;
         this.updateStatus(ctx, error.message);
@@ -294,6 +377,10 @@ export class BotSessionAdapter {
   }
 
   private handleAgentRequest(request: AgentRequest, ctx: ExtensionContext): Promise<unknown> {
+    if (request.operation === "peek") {
+      const body = v.parse(AgentOperationBodies.peek, request.body);
+      return Promise.resolve(threadHistory(ctx.sessionManager, body.limit, body.before));
+    }
     return handleBotRequest(request, {
       ctx,
       busy: () => this.compacting || this.mutations.size > 0,
@@ -311,12 +398,14 @@ export class BotSessionAdapter {
         new Promise<boolean>((resolve, reject) => {
           ctx.compact({ onComplete: () => resolve(true), onError: reject });
         }),
-      abort: () => {
+      abort: async () => {
         const pending = this.delivery.cancelPending(ctx);
         const running = !ctx.isIdle();
         this.aborting = running;
-        if (running) ctx.abort();
-        this.inbox.resume(ctx);
+        if (this.identity?.routeId?.startsWith("task_")) {
+          await this.stopTaskWriter(ctx, this.attachmentWaitForIdle);
+        } else if (running) ctx.abort();
+        if (this.isCurrentRuntime() && this.connection?.isAttached) this.inbox.resume(ctx);
         return pending || running;
       },
       newSession: () => {
@@ -364,7 +453,7 @@ export class BotSessionAdapter {
           this.needsIdleBeforeAttach = false;
         }
         if (!this.runtimeClaimed) this.claimRuntime();
-        await this.attach(ctx, userId, routeId);
+        await this.attach(ctx, userId, routeId, () => ctx.waitForIdle());
       },
     });
     this.pi.registerCommand("bot-disconnect", {
@@ -452,7 +541,12 @@ export class BotSessionAdapter {
     this.pi.on("session_compact", afterCompaction);
     this.pi.on("session_compact_failed", afterCompaction);
     this.pi.on("before_agent_start", async (event) => ({
-      systemPrompt: event.systemPrompt + SYSTEM_PROMPT_SUFFIX,
+      systemPrompt:
+        event.systemPrompt +
+        SYSTEM_PROMPT_SUFFIX +
+        (this.identity?.routeId?.startsWith("task_")
+          ? `\nThread ID: ${this.identity.routeId}. Ordinary assistant text is private. Use reply_message with the incoming user message ID to reply, or message_thread for peers. Report delegated results explicitly to the sender.`
+          : ""),
     }));
     this.pi.on("agent_start", async (_event, ctx) => {
       if (!this.isCurrentRuntime()) return;

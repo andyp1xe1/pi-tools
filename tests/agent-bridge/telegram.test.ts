@@ -305,21 +305,22 @@ test("published startup replies recover after a missing send result, but copied 
 			reply_to_message: message(100, { from: { id: 8 }, text: pending.text }),
 		}),
 	});
-	expect(store.snapshot().inputs).toHaveLength(1);
+	expect(store.snapshot().inputs).toHaveLength(2);
+  expect(store.taskForMessage({ container: topic, messageId: v.parse(MessageIdSchema, "100") })).toBeNull();
 	await adapter.accept({
 		update_id: 3,
 		message: message(12, {
 			reply_to_message: message(101, { from: { id: 99 }, text: pending.text }),
 		}),
 	});
-	expect(store.snapshot().inputs).toHaveLength(2);
+	expect(store.snapshot().inputs).toHaveLength(3);
 });
 
 test("uncertain reply recovery refuses identical text from distinct conversations", async () => {
   const { adapter, store } = setup();
   seed(store);
   const first = await adapter.accept({ update_id: 1, message: mention(10) });
-  const second = await adapter.accept({ update_id: 2, message: mention(11) });
+  const second = await adapter.accept({ update_id: 2, message: command(11, "/new second") });
   if (first?.kind !== "routed" || second?.kind !== "routed") throw new Error("Missing conversations");
   const text = "Only the attachment owner can release this thread.";
   for (const task of [first.task, second.task, first.task]) {
@@ -355,7 +356,7 @@ test("idle reset clears obsolete update IDs, including a colliding new update ID
  await adapter.accept({update_id:100,message:mention(10)});
  store.advance({transportId:adapter.transportId,nextOffset:101,now:Date.now()-7*24*60*60*1000});
  await adapter.accept({update_id:100,message:mention(11)});
- expect(store.snapshot().tasks).toHaveLength(2);expect(store.offset(adapter.transportId)).toBe(101);
+ expect(store.snapshot().tasks).toHaveLength(1);expect(store.snapshot().inputs).toHaveLength(2);expect(store.offset(adapter.transportId)).toBe(101);
 });
 for (const error of [new TelegramDeliveryUnknown(), new Error("Unknown send outcome")]) {
   test(`unknown acknowledgement outcomes fail without automatic resend: ${error.name}`, async () => {

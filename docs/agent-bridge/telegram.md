@@ -52,6 +52,24 @@ The service starts with `default.target` and restarts failures after ten seconds
 
 For operation after logout and at boot, deliberately enable lingering with `loginctl enable-linger "$USER"`. Managed agents then retain your account's filesystem and tool access even without a logged-in terminal. The service is not a sandbox and should never run as root.
 
+### Declarative updates and rollback
+
+Pin `pi-tools` to a Git source in your Nix configuration and commit its lock file. Deploy committed code, not a mutable local checkout. For a NixOS host with integrated Home Manager:
+
+```sh
+nix flake update pi-tools --flake /path/to/nix-config
+nix build /path/to/nix-config#nixosConfigurations.HOST.config.system.build.toplevel
+sudo nixos-rebuild switch --flake /path/to/nix-config#HOST
+```
+
+Review and commit the configuration changes before switching. Home Manager should be the sole owner of the generated Pi settings, service unit and enablement link. Its `systemd.user.startServices = "sd-switch"` handling reloads systemd and restarts changed units; no custom `ExecStart` drop-in or mutable runtime-package symlink is needed. Routine deployments update the pinned input and switch the normal generation.
+
+For initial adoption of manually installed direct Nix-store symlinks, privately preserve the links first, then explicitly declare `force = true` on only the three generated files: `home.file.".pi/agent/settings.json"`, `xdg.configFile."systemd/user/agent-bridge.service"`, and `xdg.configFile."systemd/user/default.target.wants/agent-bridge.service"`. A backup extension alone does not adopt foreign symlinks. Never force or move the private environment file, database or saved sessions. Remove conflicting service drop-ins deliberately; do not overwrite unrelated files.
+
+After switching, check `systemctl --user status agent-bridge`, `agent-bridge status`, the running package path and the journal. Roll back through the normal NixOS/Home Manager generation machinery if necessary; rolling back an executable does not require rolling back the database. Keep the private environment, SQLite state and native session history outside the package. Failed or interrupted turns are not automatically replayed.
+
+If the deployment is requested through the bridge itself, run the standard switch from an independent terminal, CI or an external deploy unit. Restarting the bridge terminates its hosted agents; it must not own the process performing the deployment.
+
 ### Switching an existing foreground daemon
 
 1. Finish current work; build the new package and Home Manager generation without activating it. Save the previous generation/package paths for rollback.
@@ -72,7 +90,7 @@ It sends a plain DM through the running daemon, confirms only an acknowledged Te
 
 - `/bot-connect` attaches the current Pi session to the sole configured owner's DM.
 - `/bot-connect <user ID>` selects a DM owner when several are configured.
-- `/bot-connect task_<id> [user ID]` attaches the current session to a group conversation. Pi must run in that conversation's bound project directory.
+- `/bot-connect task_<id> [user ID]` attaches the current session to a group conversation. Pi must run in that conversation's saved working directory (initially the bound project directory).
 - `/bot-disconnect` detaches without stopping the daemon.
 - `/bot-status` reports the attachment state.
 - These are optional host-side commands, not Telegram commands. Normal managed conversations require no terminal attachment.
@@ -94,15 +112,15 @@ In the topic to activate:
 
 Replace `YourBot` with the bot username. Only configured owners can change bindings. The directory must exist on the daemon host.
 
-Mention the bot to start a task:
+Send ordinary input (or optionally mention the bot) to its saved default conversation:
 
 ```text
 @YourBot fix the reconnect bug
 ```
 
-Mentioning the bot outside a tracked chain starts a conversation. Replies to mapped user or bot messages continue it, even when they mention the bot again. Other topics remain inactive.
+Unthreaded messages—including voice notes—go to this topic's default conversation. Replies to mapped user or bot messages continue their exact conversation, even with another mention. Other unbound topics remain inactive. `/new` and the agent's `create_thread` tool create independent conversations.
 
-The request immediately starts a native saved Pi session in the bound directory. Replies reopen its exact history after restart; assistant output and files remain in its reply chain. In a bound DM, plain input continues the latest conversation.
+The first request starts a native saved Pi session in the bound directory. Replies reopen its exact history after restart. Agents explicitly publish text with `reply_message` and contact peers with `message_thread`; ordinary assistant output stays private. A worker can choose another working directory, including an agent-created worktree. In a bound DM, plain input also goes to its default conversation.
 
 `/new [request]` starts a separate conversation. `/status` works at topic level or as a conversation reply. `/model`, `/thinking`, `/compact`, and `/stop` select the replied conversation or the only active one; otherwise the bot asks you to reply. Controls remain owner-only. `/unbind` cancels startup and live preparation while preserving history.
 
@@ -110,7 +128,7 @@ Sessions share normal filesystem access; there are no configured thread limits, 
 
 ## Tools and voice messages
 
-Attached Pi sessions retain `bot_attach`, streaming replies, typing, model/thinking pickers, media groups, and Telegram session controls. Only assistant text is published; thinking and tool results stay private.
+Managed conversations and visible task attachments have `list_threads`, `peek_thread`, `create_thread`, `message_thread`, `stop_thread`, and `reply_message`, plus `bot_attach`, typing, model/thinking pickers, media groups and session controls. Only explicit sends are published; ordinary text, thinking and tool results stay private. Standalone visible owner-DM attachments retain legacy streaming replies. See [routing and tool semantics](routing.md).
 
 File downloads, sends, and voice transcription go through the daemon. The Pi audio and bot integrations share one `transcribe_audio` implementation; the bot integration supplies it when no audio transcription tool is already registered. Voice preprocessing always uses daemon transcription.
 

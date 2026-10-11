@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentPort } from "../frontend.ts";
-import type { AgentOutput } from "../protocol.ts";
+import type { AgentOutput, PreparedPrompt } from "../protocol.ts";
 import { TelegramClient, type TelegramConversation, type TelegramTransport } from "./client.ts";
 import { handleTelegramCommand, isControlMessage } from "./commands.ts";
 import { TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS } from "./constants.ts";
@@ -42,6 +42,7 @@ export class TelegramSession {
     private readonly report: (error: unknown) => void = () => {},
     private readonly scope?: Omit<TelegramConversation, "signal" | "menu">,
     private readonly botUsername?: string,
+    private readonly conversation?: { id: string; explicit: boolean },
   ) {
     this.chatId = scope?.chatId ?? userId;
     this.client = new TelegramClient(transport, {
@@ -62,6 +63,9 @@ export class TelegramSession {
   }
   get isLive(): boolean {
     return this.current();
+  }
+  get isRunning(): boolean {
+    return !!this.active || this.slots.length > 0 || this.routes.size > 0;
   }
   private current(): boolean {
     return !this.closed && this.agent.current() && (this.scope?.current() ?? true);
@@ -172,7 +176,7 @@ export class TelegramSession {
   private prepare(slot: Slot): void {
     const signal = AbortSignal.any([this.controller.signal, this.preparation.signal]);
     this.run(
-      createTelegramTurn(this.client, slot.messages, signal)
+      createTelegramTurn(this.client, slot.messages, signal, this.conversation?.explicit)
         .then((turn) => {
           if (this.current() && !signal.aborted && !slot.cancelled) slot.turn = turn;
         })
@@ -209,8 +213,20 @@ export class TelegramSession {
       this.agent.prompt({ id, content: slot.turn.content });
     }
   }
+  /** Peer input uses the same FIFO as prepared user media and never waits for agent completion. */
+  receivePrepared(content: PreparedPrompt["content"]): void {
+    if (!this.current()) throw new Error("Thread is detached");
+    if (this.slots.length + this.routes.size >= 64) throw new Error("Too many pending thread messages");
+    this.slots.push({ messages: [], turn: { chatId: this.chatId, replyToMessageId: 0, content } });
+    this.drain();
+  }
   output(event: AgentOutput): void {
     if (!this.current()) return;
+    if (
+      this.conversation?.explicit &&
+      (event.type === "text-start" || event.type === "text-update" || event.type === "text-end")
+    )
+      return;
     if (event.type === "delivery-error") {
       const route = this.routes.get(event.turnId);
       this.routes.delete(event.turnId);

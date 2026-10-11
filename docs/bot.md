@@ -39,7 +39,9 @@ Controls bypass slow download/transcription work. Album and voice preparation pr
 
 ## Output
 
-Pi emits normalized text and lifecycle events. The daemon handles Telegram chunking, streamed edits, typing indicators, error replies, and message IDs. Only assistant text is forwarded; thinking and tool results remain private. Terminal-originated output is not published unless it belongs to an acknowledged bot turn.
+Managed conversations and visible `task_` attachments use explicit communication: `reply_message` publishes user replies and `message_thread` sends peer input. Ordinary assistant text, thinking and tool results stay private. The daemon owns chunking, mentions, typing, operational errors and message mappings. Standalone visible owner-DM attachments retain legacy streaming of acknowledged bot-turn text.
+
+`list_threads`, `peek_thread`, `create_thread(cwd, title, text)`, and `stop_thread` let agents discover, inspect, delegate and unload saved conversations. Finishing a turn does not automatically notify a parent; agents report results explicitly. See [thread tools and provenance](agent-bridge/routing.md).
 
 ## Agent tools and voice
 
@@ -53,13 +55,13 @@ The standalone audio extension captures the active bridge provider before asynch
 
 ## Optional manual session lifecycle
 
-The Pi inbox submits prepared input as custom messages with validated opaque turn IDs. It retains input until matching `message_start` acknowledgement, independent of text-transforming input hooks. Asynchronous model/auth preflight and settlement without acknowledgement report delivery failures and release the FIFO without retrying the same message. Custom submission bypasses Pi's `input` and `before_agent_start` hooks; registered tool prompt guidance still applies. It uses steering during active turns and waits through compaction, including failed compaction. Image-file reads reserve their position before asynchronous work. Unrelated terminal or extension input ends bot attribution before subsequent output.
+The Pi inbox submits prepared input as custom messages with validated opaque turn IDs. It retains input until matching `message_start` acknowledgement, independent of text-transforming input hooks. Asynchronous model/auth preflight and settlement without acknowledgement report delivery failures and release the FIFO without retrying the same message. Custom submission bypasses Pi's `input` and `before_agent_start` hooks; managed bridge instructions are appended to the actual native base prompt, and registered tool prompt guidance applies in both managed and visible sessions. It uses steering during active turns and waits through compaction, including failed compaction. Image-file reads reserve their position before asynchronous work. Unrelated terminal or extension input ends bot attribution before subsequent output.
 
 After successful `/bot-connect`, validated process memory retains the selected route and owner during lifecycle handoff. Reload can reconnect the same saved group session; switching to a different session cannot silently replace a durable group association. DM routes retain reattachment across `/new`, `/resume`, `/fork`, and `/reload`. Session history never authorizes attachment, and a fresh Pi process starts detached.
 
 Handoff waits for started Pi model changes and requested compaction, then for daemon release acknowledgement or socket closure. Detach has a one-second fallback. Explicit disconnect, quit, failed attachment, and unexpected socket closure clear intent. There is no automatic retry loop after failure.
 
-Detach clears both sides' pending input and reply attribution and cancels daemon preparation, typing, menus, and queued previews. Already submitted Pi input may finish locally, but its output cannot cross into a new attachment. Manual reconnect waits for old submitted input to settle; active reload holds new input until the old run is idle. Inbox state is not crash-durable.
+Detach clears both sides' pending input and reply attribution and cancels daemon preparation, typing, menus and queued previews. Visible task detach also aborts the run and waits for settlement before releasing its saved-session writer; legacy standalone DM work may finish locally, but cannot publish through a new attachment. Manual reconnect waits for old submitted input to settle; active reload holds new input until the old run is idle. Inbox state is not crash-durable.
 
 ## IPC limits
 

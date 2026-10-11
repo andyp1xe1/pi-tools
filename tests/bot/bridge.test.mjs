@@ -30,7 +30,7 @@ function harness(t, { prepare, Adapter = BotSessionAdapter, rejectAttach = false
   const submissions = [], notifications = [], clients = [], statuses = [];
   let idle = true, thinking = "off", currentModel = model;
   const ctx = {
-    cwd: process.cwd(), isIdle: () => idle, abort: () => {}, waitForIdle: async () => {},
+    cwd: process.cwd(), isIdle: () => idle, abort: () => {}, waitForIdle: async () => {}, hasPendingMessages: () => false,
     newSession: async () => ({ cancelled: false }), compact: ({ onComplete }) => onComplete({}),
     scopedModels: [], modelRegistry: { getAvailable: () => [model], isUsingOAuth: () => false, hasConfiguredAuth: () => false, getProviderAuth: async () => auth },
     get model() { return currentModel; }, getContextUsage: () => undefined,
@@ -58,7 +58,9 @@ function harness(t, { prepare, Adapter = BotSessionAdapter, rejectAttach = false
         const frame = { type: "attached", userId: userId ?? "42", ...(routeId ? { routeId } : {}), frontend: { id: "fake:frontend", label: "fake_bot" } };
         options.onAttached(frame); return frame;
       },
-      disconnect: async () => {
+      disconnect: async (detachOptions) => {
+        client.disconnectOptions = detachOptions;
+        client.disconnectCalls = (client.disconnectCalls ?? 0) + 1;
         client.isAttached = false;
         client.attachGate?.reject(new Error("detached before handshake"));
         if (client.closeGate) await client.closeGate.promise;
@@ -694,6 +696,115 @@ test("group detach cancels input still preparing inside Pi", async (t) => {
   h.client.isAttached = false; h.client.options.onDisconnect(new Error("Topic unbound"));
   assert.equal(signal.aborted, true); gate.resolve({ id: "p1", content: prompt("pending image").content });
   await nextTick(); await h.tick(); assert.deepEqual(h.submissions, []); assert.equal(h.adapter.inbox.count, 0);
+});
+
+for (const source of ["explicit", "unexpected", "shutdown"]) {
+  test(`task ${source} detach aborts native queues and waits for writer settlement before socket close`, async (t) => {
+    const h = harness(t), aborted = deferred(), settled = deferred(), close = deferred();
+    let abortCalls = 0; const nativeQueue = [];
+    h.ctx.abort = () => { abortCalls++; nativeQueue.length = 0; return aborted.promise; };
+    h.ctx.waitForIdle = () => settled.promise;
+    h.ctx.hasPendingMessages = () => nativeQueue.length > 0;
+    await h.emit("session_start"); await h.command("bot-connect", "task_thread-1 77");
+    const oldClient = h.client; oldClient.closeGate = close;
+    h.receive(prompt("active")); await nextTick(); await h.acknowledge();
+    h.setIdle(false); await h.emit("agent_start");
+    nativeQueue.push("unacknowledged bot steering");
+    h.receive(prompt("queued", "p2")); await nextTick();
+    let closing;
+    if (source === "explicit") closing = h.command("bot-disconnect");
+    else if (source === "shutdown") closing = h.emit("session_shutdown", { reason: "reload" });
+    else {
+      oldClient.isAttached = false;
+      oldClient.options.onDisconnect(new Error("socket lost"));
+      closing = h.adapter.disconnectingPromise;
+    }
+    assert.equal(abortCalls, 1); assert.equal(nativeQueue.length, 0);
+    assert.equal(h.adapter.inbox.count, 0); assert.equal(h.adapter.inbox.isPaused, true);
+    assert.equal(oldClient.disconnectCalls ?? 0, 0);
+    aborted.resolve(); await nextTick(); assert.equal(oldClient.disconnectCalls ?? 0, 0);
+    h.setIdle(true); settled.resolve(); await until(() => oldClient.disconnectCalls === 1);
+    assert.deepEqual(oldClient.disconnectOptions, source === "unexpected" ? undefined : { quiesced: true });
+    let done = false; void closing.then(() => { done = true; }); await nextTick(); assert.equal(done, false);
+    close.resolve(); await closing; assert.equal(done, true);
+    await h.tick(); assert.equal(h.submissions.length, 2); // only pre-detach emissions
+    assert.equal(h.adapter.connection, undefined);
+  });
+}
+
+test("task reverse abort acknowledges only after native queue clearing and full Pi settlement", async (t) => {
+  const h = harness(t), settled = deferred(); let aborts = 0, nativeQueued = true;
+  h.ctx.abort = () => { aborts++; nativeQueued = false; };
+  h.ctx.waitForIdle = () => settled.promise;
+  h.ctx.hasPendingMessages = () => nativeQueued;
+  await h.emit("session_start"); await h.command("bot-connect", "task_thread-1 77");
+  h.setIdle(false); let acknowledged = false;
+  const abort = h.backend("abort").then((value) => { acknowledged = true; return value; });
+  await nextTick(); assert.equal(aborts, 1); assert.equal(nativeQueued, false); assert.equal(acknowledged, false);
+  h.setIdle(true); settled.resolve(); assert.equal(await abort, true); assert.equal(acknowledged, true);
+  assert.equal(h.client.isAttached, true);
+  assert.equal(h.client.disconnectCalls ?? 0, 0);
+});
+
+test("task confirmed detach waits for in-flight mutations before releasing the writer lease", async (t) => {
+  const h = harness(t), mutation = deferred();
+  await h.emit("session_start"); await h.command("bot-connect", "task_thread-1 77");
+  h.pi.setModel = async () => { await mutation.promise; return true; };
+  const request = h.backend("setModel", { provider: "fake", id: "next" });
+  const rejected = assert.rejects(request, /attachment changed/);
+  const client = h.client, disconnect = h.command("bot-disconnect");
+  await nextTick(); assert.equal(client.disconnectCalls ?? 0, 0);
+  mutation.resolve(); await disconnect; await rejected;
+  assert.deepEqual(client.disconnectOptions, { quiesced: true });
+});
+
+test("unexpected task socket loss remains unconfirmed until exact visible-session reattach and graceful detach", async (t) => {
+  const h = harness(t);
+  await h.emit("session_start"); await h.command("bot-connect", "task_thread-1 77");
+  const lost = h.client; lost.isAttached = false; lost.options.onDisconnect(new Error("EOF"));
+  await h.adapter.disconnectingPromise;
+  assert.equal(lost.disconnectOptions, undefined);
+  await h.command("bot-connect", "task_thread-1 77");
+  assert.deepEqual(h.client.attachArgs, lost.attachArgs);
+  await h.command("bot-disconnect");
+  assert.deepEqual(h.client.disconnectOptions, { quiesced: true });
+});
+
+test("task auto-reattach without command hooks observes idle asynchronously on detach", async (t) => {
+  const old = harness(t); await old.emit("session_start"); await old.command("bot-connect", "task_thread-1 77");
+  await old.emit("session_shutdown", { reason: "reload" });
+  const h = harness(t); await h.emit("session_start", { reason: "reload" });
+  h.setIdle(false); let aborts = 0; h.ctx.abort = () => { aborts++; };
+  const client = h.client;
+  const disconnect = h.command("bot-disconnect"); await nextTick();
+  assert.equal(aborts, 1); assert.equal(client.disconnectCalls ?? 0, 0);
+  h.setIdle(true); await h.tick(10); await disconnect;
+  assert.equal(client.disconnectCalls, 1);
+  assert.deepEqual(client.disconnectOptions, { quiesced: true });
+});
+
+test("DM detach cancels pending bot input without aborting an unrelated terminal turn", async (t) => {
+  const h = harness(t); await h.start(); h.setIdle(false);
+  let aborts = 0; h.ctx.abort = () => { aborts++; };
+  h.ctx.waitForIdle = () => assert.fail("DM detach must not wait for terminal work");
+  h.receive(prompt("pending")); await nextTick(); await h.command("bot-disconnect");
+  assert.equal(aborts, 0); assert.equal(h.adapter.inbox.count, 0);
+  assert.equal(h.client.disconnectCalls, 1);
+  assert.equal(h.client.disconnectOptions, undefined);
+  await h.tick(); assert.deepEqual(h.submissions, []);
+});
+
+test("task detach refuses to release a writer when the host abort hook leaves native queues", async (t) => {
+  const h = harness(t); await h.emit("session_start"); await h.command("bot-connect", "task_thread-1 77");
+  h.ctx.hasPendingMessages = () => true;
+  const client = h.client;
+  await assert.rejects(h.command("bot-disconnect"), /queued messages after abort/);
+  assert.equal(client.disconnectCalls ?? 0, 0); assert.equal(client.isAttached, true);
+  assert.equal(client.disconnectOptions, undefined);
+  await assert.rejects(h.command("bot-connect"), /queued messages after abort/);
+  // Recover the intentionally failed-closed mock host for test teardown only.
+  h.ctx.hasPendingMessages = () => false; h.adapter.disconnectingPromise = undefined;
+  await client.disconnect();
 });
 
 test("explicit task connect carries route identity; bot-new cannot silently replace durable group session", async (t) => {

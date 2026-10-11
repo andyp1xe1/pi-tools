@@ -39,17 +39,60 @@ export const AgentOutputSchema = v.variant("type", [
   v.object({ type: v.literal("delivery-error"), turnId: identifier, error: v.string() }),
 ]);
 export type AgentOutput = v.InferOutput<typeof AgentOutputSchema>;
+export const ThreadSummarySchema = v.object({
+  id: identifier,
+  title: v.string(),
+  cwd: LocalPathSchema,
+  status: v.picklist(["starting", "running", "idle", "stopped", "unconfirmed"]),
+  isDefault: v.boolean(),
+  isCurrent: v.optional(v.boolean()),
+  parentThreadId: v.optional(identifier),
+});
+export const PeekMessagesSchema = v.object({
+  messages: v.array(v.object({ id: identifier, role: v.string(), text: v.string() })),
+  nextBefore: v.optional(identifier),
+});
+const peekBody = {
+  limit: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(50))),
+  before: v.optional(identifier),
+};
+const threadText = v.pipe(text, v.maxLength(50000));
 export const OperationBodies = {
+  listThreads: v.strictObject({
+    limit: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(100))),
+    before: v.optional(identifier),
+  }),
+  peekThread: v.strictObject({ threadId: identifier, ...peekBody }),
+  createThread: v.strictObject({ cwd: LocalPathSchema, title: v.pipe(text, v.maxLength(120)), text: threadText }),
+  messageThread: v.strictObject({ threadId: identifier, text: threadText }),
+  stopThread: v.strictObject({ threadId: identifier }),
+  replyMessage: v.strictObject({ messageId: identifier, text: threadText, mentions: v.optional(v.array(identifier)) }),
   sendAttachment: v.strictObject({ path: LocalPathSchema, fileName: text }),
   transcribeAudio: v.strictObject({ path: LocalPathSchema, model: v.optional(text), language: v.optional(text) }),
 };
 export const OperationResults = {
+  listThreads: v.array(ThreadSummarySchema),
+  peekThread: v.object({ ...ThreadSummarySchema.entries, ...PeekMessagesSchema.entries }),
+  createThread: v.object({ threadId: identifier, accepted: v.literal(true) }),
+  messageThread: v.object({ messageId: identifier, accepted: v.literal(true) }),
+  stopThread: v.boolean(),
+  replyMessage: v.object({ messageIds: v.array(identifier) }),
   sendAttachment: v.boolean(),
   transcribeAudio: v.union([v.string(), v.object({ transcriptPath: LocalPathSchema })]),
 };
-export const OperationSchema = v.picklist(["sendAttachment", "transcribeAudio"]);
+export const OperationSchema = v.picklist([
+  "sendAttachment",
+  "transcribeAudio",
+  "listThreads",
+  "peekThread",
+  "createThread",
+  "messageThread",
+  "stopThread",
+  "replyMessage",
+]);
 export type Operation = v.InferOutput<typeof OperationSchema>;
 export const AgentOperationBodies = {
+  peek: v.object(peekBody),
   snapshot: v.object({}),
   setModel: v.object({ provider: text, id: text }),
   setThinking: v.object({ level: ThinkingLevelSchema }),
@@ -58,6 +101,7 @@ export const AgentOperationBodies = {
   newSession: v.object({}),
 };
 export const AgentOperationResults = {
+  peek: PeekMessagesSchema,
   snapshot: AgentSnapshotSchema,
   setModel: v.boolean(),
   setThinking: ThinkingLevelSchema,
@@ -66,6 +110,7 @@ export const AgentOperationResults = {
   newSession: v.boolean(),
 };
 export const AgentOperationSchema = v.picklist([
+  "peek",
   "snapshot",
   "setModel",
   "setThinking",
@@ -103,7 +148,7 @@ export const ClientFrameSchema = v.variant("type", [
   v.object({ type: v.literal("status") }),
   v.object({ type: v.literal("stop") }),
   v.object({ type: v.literal("notify"), ...NotificationSchema.entries }),
-  v.object({ type: v.literal("detach") }),
+  v.object({ type: v.literal("detach"), quiesced: v.optional(v.boolean()) }),
   v.object({ type: v.literal("cancel"), id: identifier }),
   v.object({ type: v.literal("output"), event: AgentOutputSchema }),
   v.object({ type: v.literal("agent-result"), id: identifier, result: v.unknown() }),

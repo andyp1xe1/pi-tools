@@ -3,6 +3,8 @@ import type {
   AgentSnapshot,
   ClientFrame,
   Notification,
+  Operation,
+  PeekMessagesSchema,
   PreparedPrompt,
   ServerFrame,
   Statistics,
@@ -37,7 +39,16 @@ export interface BridgeFrontend {
   open(identity: AttachmentIdentity, agent: AgentPort): SessionFrontend;
   bind(request: AttachmentRequest, identity: AttachmentIdentity): void;
   statistics(): Statistics;
+  /** A graceful task writer explicitly confirms quiescence; EOF alone cannot prove it stopped. */
+  disconnected?(identity: AttachmentIdentity, quiesced: boolean): void;
   error(error: unknown): { message: string; unknownOutcome?: boolean } | undefined;
+  /** Conversation tools are authorized and scoped by the owning platform adapter. */
+  threadOperation?(
+    identity: AttachmentIdentity,
+    operation: Operation,
+    body: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<unknown>;
   /** Local administration only; the frontend authorizes the opaque recipient. */
   notify?(notification: Notification): Promise<void>;
 }
@@ -55,9 +66,17 @@ export interface SessionTarget {
   sessionId?: string;
   sessionFile?: string;
   attachmentToken?: string;
+  explicit?: boolean;
+  isDefault?: boolean;
+  parentThreadId?: string;
 }
 export interface SessionBackend {
   open(target: SessionTarget): Promise<{ sessionId: string; sessionFile: string }>;
   closeRoute(routeId: string): Promise<void>;
+  peek?(
+    target: SessionTarget,
+    limit?: number,
+    before?: string,
+  ): Promise<import("valibot").InferOutput<typeof PeekMessagesSchema>>;
   close(): Promise<void>;
 }

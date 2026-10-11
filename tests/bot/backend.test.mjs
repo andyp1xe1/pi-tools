@@ -7,7 +7,7 @@ import { setImmediate as nextTick } from "node:timers/promises";
 import { test } from "node:test";
 import { createAgentSessionFromServices, SessionManager } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { PiSessionBackend } from "../../src/pi-backend/index.ts";
+import { PiSessionBackend, readThreadHistory } from "../../src/pi-backend/index.ts";
 
 const prompt = (id, text = id) => ({ id, content: [{ type: "text", text: `[telegram] ${text}` }] });
 const model = { provider: "fake", id: "first", name: "First", reasoning: true, input: ["text"], contextWindow: 100000, maxTokens: 1000, api: "openai-completions" };
@@ -102,7 +102,12 @@ async function harness(t, options = {}) {
     },
     createClient: (input) => {
       const client = {
-        options: input, isAttached: false, outputs: [], attachments: [], transcriptions: [],
+        options: input, isAttached: false, outputs: [], attachments: [], transcriptions: [], requests: [],
+        request: async (operation, body, signal) => {
+          signal?.throwIfAborted(); client.requests.push({ operation, body, signal });
+          if (client.requestGate) await client.requestGate.promise;
+          return client.requestResult;
+        },
         attach: async (sessionId, ownerId, routeId, targetCwd) => {
           client.identity = { sessionId, ownerId, routeId, cwd: targetCwd };
           if (options.attachGate) await options.attachGate.promise;
@@ -426,6 +431,91 @@ test("noninteractive startup respects saved project trust and never implicitly a
   await rm(join(h.agentDir, "trust.json"));
   await h.backend.open(h.target("task_opted_in"));
   assert.equal(h.serviceCalls[3].settingsManager.isProjectTrusted(), true);
+});
+
+test("explicit sessions retain acknowledgements/errors/lifecycle but keep ordinary text private", async (t) => {
+  const h = await harness(t); await h.backend.open(h.target("task_one", { explicit: true, parentThreadId: "task_parent" }));
+  const session = h.sessions[0], client = h.clients[0];
+  h.receive(prompt("incoming")); await until(() => session.submissions.length === 1); session.acknowledge();
+  session.emit({ type: "message_start", message: assistant("") });
+  session.emit({ type: "message_update", message: assistant("private partial") });
+  session.emit({ type: "message_end", message: assistant("private final") });
+  session.emit({ type: "agent_settled" });
+  assert.deepEqual(client.outputs, [{ type: "turn-start", turnId: "incoming" }, { type: "settled", error: undefined }]);
+  session.auth = false; h.receive(prompt("failed")); await until(() => client.outputs.at(-1)?.turnId === "failed");
+  assert.equal(client.outputs.at(-1).type, "delivery-error");
+  const names = [...session.services.tools.keys()];
+  for (const name of ["list_threads", "peek_thread", "create_thread", "message_thread", "stop_thread", "reply_message"]) assert.ok(names.includes(name));
+  assert.equal(session.services.handlers.has("before_agent_start"), false);
+  const systemPrompt = session.services.resourceLoaderOptions.appendSystemPromptOverride(["base"]).join("\n");
+  assert.match(systemPrompt, /Thread ID: task_one/); assert.match(systemPrompt, /Parent thread: task_parent/);
+  assert.match(systemPrompt, /Ordinary assistant text is private/); assert.match(systemPrompt, /reply_message/);
+  client.requestResult = { messageId: "peer_1", accepted: true };
+  const tool = session.services.tools.get("message_thread");
+  const reply = await tool.execute("t", { threadId: "task_parent", text: "result" });
+  assert.deepEqual(reply.details, { result: client.requestResult, communication: { destination: "thread=task_parent", text: "result" } });
+  client.requestGate = deferred();
+  const pending = tool.execute("t", { threadId: "task_parent", text: "late result" });
+  await until(() => client.requests.length === 2);
+  const closing = h.backend.closeRoute("task_one"); client.requestGate.resolve();
+  await assert.rejects(pending, /not attached/); await closing;
+});
+
+test("live and stopped peeks paginate native history without exposing thinking or raw tool data", async (t) => {
+  const h = await harness(t);
+  const mapping = await h.backend.open(h.target("task_one", { explicit: true, attachmentToken: "secret" }));
+  const manager = h.sessions[0].sessionManager;
+  const userId = manager.appendMessage({ role: "user", content: "user input", timestamp: Date.now() });
+  const customId = manager.appendCustomMessageEntry("agent-bridge", [{ type: "text", text: "[thread from=task_parent message=peer_1] incoming" }], true);
+  const assistantId = manager.appendMessage({ ...assistant("public projection"), content: [{ type: "thinking", thinking: "NEVER EXPOSE" }, { type: "text", text: "public projection" }, { type: "toolCall", id: "call", name: "bash", arguments: { command: "RAW COMMAND" } }], timestamp: Date.now() });
+  const toolId = manager.appendMessage({ role: "toolResult", toolName: "bash", toolCallId: "call", content: [{ type: "text", text: "RAW TOOL OUTPUT" }], details: { secret: "RAW DETAILS" }, isError: false, timestamp: Date.now() });
+  const inspection = h.target("task_one", mapping);
+  const tail = await h.backend.peek(inspection, 2);
+  assert.deepEqual(tail.messages.map((message) => message.id), [assistantId, toolId]);
+  assert.equal(tail.nextBefore, assistantId);
+  assert.match(tail.messages[0].text, /public projection/); assert.match(tail.messages[0].text, /Tools: bash/);
+  assert.equal(tail.messages[1].text, "[Tool bash: completed]");
+  assert.doesNotMatch(JSON.stringify(tail), /NEVER EXPOSE|RAW/);
+  const older = await h.request("peek", { limit: 2, before: tail.nextBefore });
+  assert.deepEqual(older.messages.map((message) => message.id), [userId, customId]); assert.equal(older.nextBefore, undefined);
+  await assert.rejects(h.request("peek", { limit: 0 }));
+  await assert.rejects(h.request("peek", { before: "missing" }), /cursor/);
+  await assert.rejects(h.backend.peek({ ...inspection, ownerId: "wrong" }), /target changed/);
+  await h.backend.closeRoute("task_one");
+  const saved = await readFile(mapping.sessionFile, "utf8");
+  assert.deepEqual(await readThreadHistory(mapping.sessionFile, 2), tail);
+  assert.deepEqual(await h.backend.peek(inspection, 2), tail);
+  assert.equal(await readFile(mapping.sessionFile, "utf8"), saved);
+  const absent = join(h.dir, "missing-history.jsonl");
+  await assert.rejects(readThreadHistory(absent), /ENOENT/); await assert.rejects(stat(absent), /ENOENT/);
+  for (const content of ["", "{}\n", "garbage"]) {
+    const path = join(h.dir, "invalid-history.jsonl"); await writeFile(path, content);
+    await assert.rejects(readThreadHistory(path)); assert.equal(await readFile(path, "utf8"), content);
+  }
+  await assert.rejects(h.backend.peek({ ...inspection, sessionId: "wrong" }), /does not match/);
+});
+
+test("only default threads get model-aware 30% compaction overrides, never written to settings", async (t) => {
+  const h = await harness(t);
+  const settingsFile = join(h.agentDir, "settings.json");
+  const original = JSON.stringify({ compaction: { enabled: true, reserveTokens: 12345, keepRecentTokens: 18000 } });
+  await writeFile(settingsFile, original);
+  await h.backend.open(h.target("task_default", { explicit: true, isDefault: true }));
+  await h.backend.open(h.target("task_other", { explicit: true }));
+  const settings = h.serviceCalls[0].settingsManager;
+  assert.deepEqual(settings.getCompactionSettings(), { enabled: true, reserveTokens: 70000, keepRecentTokens: 10000 });
+  assert.deepEqual(h.serviceCalls[1].settingsManager.getCompactionSettings(), { enabled: true, reserveTokens: 12345, keepRecentTokens: 18000 });
+  const handlers = h.sessions[0].services.handlers;
+  await handlers.get("model_select")[0]({ model: { contextWindow: 200000 } });
+  assert.deepEqual(settings.getCompactionSettings(), { enabled: true, reserveTokens: 140000, keepRecentTokens: 18000 });
+  const guard = handlers.get("session_before_compact")[0];
+  const event = { reason: "threshold", branchEntries: [{ type: "compaction", firstKeptEntryId: "same" }], preparation: { firstKeptEntryId: "same" } };
+  assert.deepEqual(await guard(event), { cancel: true });
+  assert.equal(await guard({ ...event, preparation: { firstKeptEntryId: "new" } }), undefined);
+  assert.equal(await guard({ ...event, reason: "overflow" }), undefined);
+  assert.equal(await guard({ ...event, reason: "manual" }), undefined);
+  await h.backend.close();
+  assert.equal(await readFile(settingsFile, "utf8"), original);
 });
 
 test("real SDK resources/startup/shutdown and BridgeClient socket attach with a deterministic offline provider", async (t) => {

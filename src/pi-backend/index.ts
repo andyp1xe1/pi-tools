@@ -9,7 +9,9 @@ import {
   DefaultPackageManager,
   getAgentDir,
   hasTrustRequiringProjectResources,
+  migrateSessionEntries,
   ProjectTrustStore,
+  parseSessionEntries,
   resolveModelScopeWithDiagnostics,
   SessionManager,
   SettingsManager,
@@ -17,11 +19,22 @@ import {
 import * as v from "valibot";
 import { BridgeClient } from "../agent-bridge/client.ts";
 import type { SessionBackend, SessionTarget } from "../agent-bridge/frontend.ts";
-import type { AgentOutput, AgentRequest, PreparedPrompt } from "../agent-bridge/protocol.ts";
+import {
+  AgentOperationBodies,
+  type AgentOutput,
+  type AgentRequest,
+  type PreparedPrompt,
+} from "../agent-bridge/protocol.ts";
 import { createAudioTranscriptionTool } from "../audio-transcription/index.ts";
 import { handleBotRequest } from "../bot/controls.ts";
 import { BotDelivery } from "../bot/delivery.ts";
 import { preparePrompt } from "../bot/messages.ts";
+import {
+  registerThreadTools,
+  type ThreadHistory,
+  type ThreadToolConnection,
+  threadHistory,
+} from "../bot/thread-tools.ts";
 import { registerBotTools, type ToolConnection } from "../bot/tools.ts";
 
 interface Factories {
@@ -57,6 +70,37 @@ async function managedExtensionPaths(
     if (!visibleAttachment) paths.push(resource.path);
   }
   return paths;
+}
+
+const historyHeader = v.object({ type: v.literal("session"), id: v.pipe(v.string(), v.nonEmpty()), cwd: v.string() });
+
+/** Read stopped histories without opening, creating, migrating, or rewriting any saved file. */
+export async function readThreadHistory(
+  sessionFile: string,
+  limit?: number,
+  before?: string,
+  expectedId?: string,
+): Promise<ThreadHistory> {
+  const content = await readFile(sessionFile, "utf8");
+  const header = v.parse(historyHeader, JSON.parse(content.split("\n")[0]));
+  if (expectedId && header.id !== expectedId) throw new Error("Mapped Pi session ID does not match file");
+  const entries = parseSessionEntries(content);
+  migrateSessionEntries(entries);
+  // SessionManager assumes an acyclic tree; reject corrupt links before traversing it.
+  const seen = new Set<string>();
+  for (const entry of entries.slice(1)) {
+    if (
+      !entry ||
+      typeof entry !== "object" ||
+      !("parentId" in entry) ||
+      typeof entry.id !== "string" ||
+      seen.has(entry.id) ||
+      (entry.parentId !== null && !seen.has(entry.parentId))
+    )
+      throw new Error("Invalid saved Pi session tree");
+    seen.add(entry.id);
+  }
+  return threadHistory(SessionManager.inMemory(header.cwd, undefined, entries), limit, before);
 }
 
 /** One process, one native SDK session and portable socket attachment per route. */
@@ -97,6 +141,18 @@ export class PiSessionBackend implements SessionBackend {
     return pending;
   }
 
+  async peek(target: SessionTarget, limit?: number, before?: string): Promise<ThreadHistory> {
+    if (this.closing) throw new Error("Pi backend is closed");
+    const route = this.routes.get(target.routeId);
+    if (route && !route.host.stopped) {
+      if (!route.host.matchesInspection(target)) throw new Error("Pi route target changed");
+      await route.pending;
+      return route.host.peek(limit, before);
+    }
+    if (!target.sessionFile) throw new Error("Thread has no saved session file");
+    return readThreadHistory(localPath(target.sessionFile, target.cwd), limit, before, target.sessionId);
+  }
+
   closeRoute(routeId: string): Promise<void> {
     return this.routes.get(routeId)?.host.close() ?? Promise.resolve();
   }
@@ -118,6 +174,7 @@ class ManagedSession {
   stopped = false;
   private session?: AgentSession;
   private settings?: SettingsManager;
+  private compactionKeepRecent?: number;
   private client?: BridgeClient;
   private starting?: Promise<{ sessionId: string; sessionFile: string }>;
   private closing?: Promise<void>;
@@ -155,11 +212,22 @@ class ManagedSession {
     });
   }
 
+  matchesInspection(target: SessionTarget): boolean {
+    return (
+      target.cwd === this.target.cwd &&
+      target.ownerId === this.target.ownerId &&
+      (!target.sessionId || target.sessionId === (this.session?.sessionId ?? this.target.sessionId)) &&
+      (!target.sessionFile || target.sessionFile === (this.session?.sessionFile ?? this.target.sessionFile))
+    );
+  }
   matches(target: SessionTarget): boolean {
     return (
       target.cwd === this.target.cwd &&
       target.ownerId === this.target.ownerId &&
       target.attachmentToken === this.target.attachmentToken &&
+      !!target.explicit === !!this.target.explicit &&
+      !!target.isDefault === !!this.target.isDefault &&
+      target.parentThreadId === this.target.parentThreadId &&
       (!target.sessionId || target.sessionId === (this.session?.sessionId ?? this.target.sessionId)) &&
       (!target.sessionFile || target.sessionFile === (this.session?.sessionFile ?? this.target.sessionFile))
     );
@@ -175,7 +243,24 @@ class ManagedSession {
     return !this.stopped && this.client?.isAttached === true;
   }
   private output(event: AgentOutput): void {
+    // Keep delivery acknowledgements/status intact; only automatic text publication is private.
+    if (this.target.explicit && ["text-start", "text-update", "text-end"].includes(event.type)) return;
     if (this.current()) this.client?.output(event);
+  }
+  peek(limit?: number, before?: string): ThreadHistory {
+    this.check();
+    if (!this.session) throw new Error("Pi session is not ready");
+    return threadHistory(this.session.sessionManager, limit, before);
+  }
+  private configureDefaultCompaction(window = this.session?.model?.contextWindow): void {
+    if (!this.target.isDefault || !this.settings || !window || !Number.isFinite(window) || window <= 0) return;
+    this.compactionKeepRecent ??= this.settings.getCompactionSettings().keepRecentTokens;
+    this.settings.applyOverrides({
+      compaction: {
+        reserveTokens: Math.ceil(window * 0.7),
+        keepRecentTokens: Math.min(this.compactionKeepRecent, Math.floor(window * 0.1)),
+      },
+    });
   }
   private track<T>(operation: Promise<T>): Promise<T> {
     this.operations.add(operation);
@@ -206,6 +291,13 @@ class ManagedSession {
       settingsManager: settings,
       modelRuntimeSignal: this.lifetime.signal,
       resourceLoaderOptions: {
+        // BotDelivery uses custom messages, which bypass before_agent_start.
+        // Append to the real base prompt and preserve discovered/global appends
+        // on both initial load and native resource reload.
+        appendSystemPromptOverride: (base) => [
+          ...base,
+          `Bot bridge is active. Tagged bot messages may include local attachment paths. Use bot_attach to send requested files through this session's bridge. Do not retranscribe voice messages that already include a transcript unless asked.${this.target.explicit ? `\nThread ID: ${this.target.routeId}.${this.target.isDefault ? " You are the default thread." : ""}${this.target.parentThreadId ? ` Parent thread: ${this.target.parentThreadId}.` : ""} Ordinary assistant text is private. Use reply_message with the incoming user message ID to reply, or message_thread to communicate with peers. Report delegated results explicitly to the sender.` : ""}`,
+        ],
         // Discovery is retained, but supplied explicitly because 0.85 has no pre-load filter hook.
         noExtensions: true,
         additionalExtensionPaths: paths,
@@ -214,6 +306,21 @@ class ManagedSession {
             name: "managed-bot",
             factory: (pi) => {
               registerBotTools(pi, () => this.captureConnection());
+              if (this.target.explicit) registerThreadTools(pi, () => this.captureConnection());
+              if (this.target.isDefault) {
+                pi.on("model_select", (event) => this.configureDefaultCompaction(event.model.contextWindow));
+                pi.on("session_before_compact", (event) => {
+                  if (event.reason !== "threshold") return;
+                  // A huge retained turn/summary can stay above the early threshold.
+                  // Do not summarize the identical retained boundary repeatedly.
+                  const previous = event.branchEntries.findLast((entry) => entry.type === "compaction");
+                  if (
+                    previous?.type === "compaction" &&
+                    previous.firstKeptEntryId === event.preparation.firstKeptEntryId
+                  )
+                    return { cancel: true };
+                });
+              }
               pi.registerTool(
                 createAudioTranscriptionTool(pi, () => {
                   const connection = this.captureConnection();
@@ -221,9 +328,6 @@ class ManagedSession {
                     connection.transcribeAudio(path, model, language, signal);
                 }),
               );
-              pi.on("before_agent_start", (event) => ({
-                systemPrompt: `${event.systemPrompt}\n\nBot bridge is active. Tagged bot messages may include local attachment paths. Use bot_attach to send requested files through this session's bridge. Do not retranscribe voice messages that already include a transcript unless asked.`,
-              }));
             },
           },
         ],
@@ -280,6 +384,7 @@ class ManagedSession {
       scopedModels: scope?.scopedModels,
     });
     this.session = session;
+    this.configureDefaultCompaction();
     this.check();
     session.agent.toolExecution = "parallel";
     if (!this.target.sessionId && !this.target.sessionFile) session.setSessionName(this.target.name);
@@ -322,7 +427,7 @@ class ManagedSession {
     return { sessionId: session.sessionId, sessionFile: file };
   }
 
-  private captureConnection(): ToolConnection {
+  private captureConnection(): ToolConnection & ThreadToolConnection {
     const client = this.client;
     if (!client || !this.current()) throw new Error("Pi bridge is not attached");
     const check = (): void => {
@@ -331,6 +436,12 @@ class ManagedSession {
     check();
     return {
       check,
+      request: async (operation, body, signal) => {
+        check();
+        const result = await client.request(operation, body, signal);
+        check();
+        return result;
+      },
       sendAttachment: async (body, signal) => {
         check();
         await client.sendAttachment(body, signal);
@@ -363,6 +474,10 @@ class ManagedSession {
   private async request(request: AgentRequest): Promise<unknown> {
     if (!this.current() || !this.session) throw new Error("Pi session is closed");
     const session = this.session;
+    if (request.operation === "peek") {
+      const body = v.parse(AgentOperationBodies.peek, request.body);
+      return this.peek(body.limit, body.before);
+    }
     const ctx = session.extensionRunner.createContext();
     return handleBotRequest(request, {
       ctx,
@@ -374,6 +489,7 @@ class ManagedSession {
       },
       setModel: async (model) => {
         await session.setModel(model);
+        this.configureDefaultCompaction();
         return true;
       },
       compact: async () => {

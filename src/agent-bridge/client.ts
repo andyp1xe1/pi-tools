@@ -180,12 +180,12 @@ export class BridgeClient {
     );
     return typeof result === "string" ? result : await readFile(result.transcriptPath, { encoding: "utf8", signal });
   }
-  async disconnect(): Promise<void> {
+  async disconnect(options: { quiesced?: boolean } = {}): Promise<void> {
     if (this.isAttached) {
       this.state = "detaching";
       this.rejectPending(new Error("Agent bridge detached"));
       this.detachTimer = setTimeout(() => this.fail(new Error("Agent bridge detach timed out")), 1000);
-      this.write({ type: "detach" });
+      this.write({ type: "detach", ...(options.quiesced ? { quiesced: true } : {}) });
     } else if (this.state !== "detaching") {
       this.fail(new Error("Agent bridge detached"));
     }
