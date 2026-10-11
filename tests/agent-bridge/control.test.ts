@@ -121,7 +121,7 @@ test("project controls parse explicit conversation creation and attachment relea
 		kind: "bind",
 		directory: "~/dev/project",
 	});
-	expect(parseCommand("release", "")).toEqual({ kind: "release" });
+	expect(parseCommand("threads", "")).toEqual({ kind: "threads" });
 	expect(parseCommand("new", "fresh request")).toEqual({ kind: "new", request: "fresh request" });
 	for (const name of ["grant", "revoke", "projects", "run"])
 		expect(parseCommand(name, "")).toBeNull();

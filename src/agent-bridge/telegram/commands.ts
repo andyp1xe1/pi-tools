@@ -5,7 +5,8 @@ import type { TelegramMessage } from "./schemas.ts";
 export const TELEGRAM_BOT_COMMANDS = [
   { command: "start", description: "Show bot help" },
   { command: "help", description: "Show available commands" },
-  { command: "new", description: "Start a separate saved conversation" },
+  { command: "new", description: "Create a separate saved thread" },
+  { command: "threads", description: "List Main and sibling threads with their state" },
   { command: "model", description: "Choose the active model" },
   { command: "thinking", description: "Choose the thinking level" },
   { command: "status", description: "Show model, usage, cost, and context" },
@@ -23,7 +24,7 @@ export function messageCommand(message: TelegramMessage): string {
 }
 export function isControlMessage(message: TelegramMessage): boolean {
   const command = messageCommand(message);
-  return command === "stop" || TELEGRAM_BOT_COMMANDS.some((entry) => command === `/${entry.command}`);
+  return TELEGRAM_BOT_COMMANDS.some((entry) => command === `/${entry.command}`);
 }
 export async function handleTelegramCommand(options: {
   message: TelegramMessage;
@@ -38,7 +39,6 @@ export async function handleTelegramCommand(options: {
   const send = (text: string) =>
     agent.current() ? client.sendText(message.chat.id, message.message_id, text) : Promise.resolve(undefined);
   switch (messageCommand(message)) {
-    case "stop":
     case "/stop": {
       const cancelled = options.cancelPending?.() ?? false;
       await send((await agent.abort()) || cancelled ? "Aborted current turn." : "No active turn.");
@@ -49,8 +49,7 @@ export async function handleTelegramCommand(options: {
         await send('Cannot start a new thread while the agent is busy. Send "/stop" first.');
         return;
       }
-      await send("Starting a new thread. The new session will reattach automatically.");
-      if (!(await agent.newSession())) await send("The agent became busy. No new thread was started.");
+      await send("Use /new in the project space to create a separate saved thread.");
       return;
     }
     case "/compact": {
@@ -79,8 +78,6 @@ export async function handleTelegramCommand(options: {
       await send((await agent.snapshot()).status);
       return;
     default:
-      await send(
-        "Send me a message and I will forward it to the attached agent. Commands: /new, /model, /thinking, /status, /compact, /stop.",
-      );
+      await send("Plain messages target Main; replies target their saved thread. Use /help for project commands.");
   }
 }

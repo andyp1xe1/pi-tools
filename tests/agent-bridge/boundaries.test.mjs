@@ -71,12 +71,27 @@ test("server has no transitive Bun or Pi runtime dependencies", async () => {
 test("daemon infrastructure never imports Pi code or SDKs",async()=>{
  for(const path of await files(resolve(root,"src/agent-bridge")))for(const spec of await imports(path)){
   assert.equal(spec.startsWith("@earendil-works/"),false,`${path}: ${spec}`);
-  if(spec.startsWith("."))assert.equal(resolve(dirname(path),spec).startsWith(resolve(root,"src/bot")),false,`${path}: ${spec}`);
+  if(spec.startsWith(".")) {
+   const target=resolve(dirname(path),spec);
+   if(target.startsWith(resolve(root,"src/bot"))) assert.ok(serviceFiles.has(target),`${path}: ${spec}`);
+  }
  }
+});
+const serviceFiles = new Set(["commands.ts", "command-service.ts", "runtime.ts", "thread-operations.ts"].map(file => resolve(root,"src/bot",file)));
+test("shared bot service contains no Pi runtime dependencies", async()=>{
+ const seen = new Set();
+ const visit = async path => {
+  if(seen.has(path))return; seen.add(path);
+  for(const spec of await imports(path,true)) {
+   assert.equal(/^(?:@earendil-works\/|@mariozechner\/)/.test(spec),false,`${path}: ${spec}`);
+   if(spec.startsWith("."))await visit(resolve(dirname(path),spec));
+  }
+ };
+ for(const path of serviceFiles)await visit(path);
 });
 test("Pi integration reaches bridge only through portable client and protocol",async()=>{
  const bridge=resolve(root,"src/agent-bridge");const allowed=new Set([resolve(bridge,"client.ts"),resolve(bridge,"protocol.ts")]);
- for(const path of await files(resolve(root,"src/bot")))for(const spec of await imports(path))if(spec.startsWith(".")){
+ for(const path of await files(resolve(root,"src/bot")))if(!serviceFiles.has(path))for(const spec of await imports(path))if(spec.startsWith(".")){
   const target=resolve(dirname(path),spec);if(target.startsWith(bridge))assert.ok(allowed.has(target),`${path}: ${spec}`);
  }
  const seen=new Set();const visit=async path=>{if(seen.has(path))return;seen.add(path);for(const spec of await imports(path)){

@@ -6,7 +6,7 @@ import {tmpdir} from "node:os";
 import { test } from "node:test";
 import { TelegramClient,MAX_UPLOAD_BYTES } from "../../../src/agent-bridge/telegram/client.ts";
 import { TelegramDeliveryUnknown } from "../../../src/agent-bridge/telegram/errors.ts";
-import { TelegramPreview } from "../../../src/agent-bridge/telegram/preview.ts";
+import { MAX_MESSAGE_LENGTH } from "../../../src/agent-bridge/telegram/constants.ts";
 
 test("accepted sends with lost responses are never retried",async()=>{
  let calls=0;
@@ -26,14 +26,18 @@ test("explicit rate-limit rejection is retried but creation server failure is no
  await assert.rejects(serverError.call("sendMessage",{chat_id:7,text:"unknown outcome"}),TelegramDeliveryUnknown);
  assert.equal(rejected,1);
 });
-test("unknown preview creation blocks later streaming and finalization from duplicating it",async t=>{
- t.mock.timers.enable({apis:["setTimeout"]});
- let calls=0;let errors=0;
- const preview=new TelegramPreview({async call(){calls++;throw new TelegramDeliveryUnknown();}});
- preview.start();preview.update("first");preview.schedule(7,()=>errors++);
- t.mock.timers.tick(750);await preview.waitForIdle();await new Promise(resolve=>setImmediate(resolve));
- preview.update("final");preview.schedule(7,()=>errors++);await preview.finalize(7);
- assert.equal(calls,1);assert.equal(errors,1);
+test("unknown explicit text creation stops remaining chunks without retrying; fresh explicit requests still work",async()=>{
+ const calls=[];
+ const client=new TelegramClient(()=>({botToken:"99:fake"}),async(_url,init)=>{
+  calls.push(JSON.parse(init.body));
+  if(calls.length===1)throw new Error("response lost");
+  return new Response(JSON.stringify({ok:true,result:{message_id:2}}));
+ });
+ await assert.rejects(client.sendText(7,40,"a".repeat(MAX_MESSAGE_LENGTH)+"unsent tail"),TelegramDeliveryUnknown);
+ assert.equal(calls.length,1);assert.equal(calls[0].text,"a".repeat(MAX_MESSAGE_LENGTH));
+ assert.deepEqual(calls[0].reply_parameters,{message_id:40,allow_sending_without_reply:false});
+ assert.equal(await client.sendText(7,50,"fresh explicit request"),2);
+ assert.deepEqual(calls.map(call=>call.text),["a".repeat(MAX_MESSAGE_LENGTH),"fresh explicit request"]);
 });
 test("explicit text reply anchors survive the shared client",async()=>{
  const calls=[];

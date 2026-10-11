@@ -37,7 +37,7 @@ function registry() {
     bound = true;
     const ctx = {
       cwd: process.cwd(), isIdle: () => true,
-      ui: { theme: { fg: (_color, text) => text }, setStatus() {} }, sessionManager: { getSessionId: () => "audio-test" },
+      ui: { theme: { fg: (_color, text) => text }, setStatus() {} }, sessionManager: { getSessionId: () => "audio-test", getSessionFile: () => undefined },
     };
     for (const handler of handlers.get("session_start") ?? []) await handler({ reason: "startup" }, ctx);
   };

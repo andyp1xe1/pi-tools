@@ -1,7 +1,7 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fchmodSync, fstatSync, openSync } from "node:fs";
-import { basename } from "node:path";
+import { closeSync, constants, fchmodSync, fstatSync, openSync, statSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import * as v from "valibot";
 import { preparePrivatePath } from "./config.ts";
 import {
@@ -159,6 +159,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS thread_settings (
         task_id TEXT PRIMARY KEY REFERENCES tasks(id), cwd TEXT NOT NULL, parent_thread_id TEXT
       );
+      CREATE TABLE IF NOT EXISTS thread_anchor_claims (task_id TEXT PRIMARY KEY REFERENCES tasks(id));
       CREATE TABLE IF NOT EXISTS default_threads (
         container TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id),
         task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id), PRIMARY KEY(container, project_id)
@@ -370,6 +371,35 @@ export class Store {
       params: [sessionId],
     });
   }
+  attachmentForFile(sessionFile: string): TaskAttachment | null {
+    const exact = this.one({
+      schema: TaskAttachmentRowSchema,
+      sql: "SELECT * FROM task_attachments WHERE session_file=?",
+      params: [sessionFile],
+    });
+    if (exact) return exact;
+    // Preserve the recorded path, but refuse symlink/hard-link aliases as new
+    // writers too. Missing files still share ownership for equivalent paths.
+    const inode = (path: string): string | undefined => {
+      try {
+        const file = statSync(path, { bigint: true });
+        return `${file.dev}:${file.ino}`;
+      } catch {
+        return undefined;
+      }
+    };
+    const physical = inode(sessionFile);
+    return (
+      this.many({ schema: TaskAttachmentRowSchema, sql: "SELECT * FROM task_attachments" }).find(
+        (saved) =>
+          resolve(saved.sessionFile) === resolve(sessionFile) ||
+          (physical !== undefined && physical === inode(saved.sessionFile)),
+      ) ?? null
+    );
+  }
+  claimAnchor(taskId: TaskId): boolean {
+    return this.db.query("INSERT OR IGNORE INTO thread_anchor_claims VALUES (?)").run(taskId).changes === 1;
+  }
   attachTask(attachment: TaskAttachment): void {
     const row = v.parse(TaskAttachmentRowSchema, {
       task_id: attachment.taskId,
@@ -386,12 +416,10 @@ export class Store {
             throw new Error("This thread already has a different saved session file.");
           return;
         }
-        throw new Error(
-          "This thread belongs to another session. Explicitly release its attachment before replacing it.",
-        );
+        throw new Error("This thread belongs to another saved session. Create a new thread instead of replacing it.");
       }
-      if (this.attachmentForSession(row.sessionId))
-        throw new Error("This session is already assigned to another thread.");
+      if (this.attachmentForSession(row.sessionId) || this.attachmentForFile(row.sessionFile))
+        throw new Error("This saved session is already assigned to another thread.");
       this.db
         .query("INSERT INTO task_attachments (task_id,session_id,owner_id,session_file) VALUES (?, ?, ?, ?)")
         .run(row.taskId, row.sessionId, row.ownerId, row.sessionFile);

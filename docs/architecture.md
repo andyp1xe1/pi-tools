@@ -1,68 +1,84 @@
 # Code boundaries
 
-Extension entrypoints under `extensions/` only call named registration functions. Implementations and reusable helpers live under `src/`; importing them does not register an extension.
+Extension entrypoints under `extensions/` call named registration functions. Implementations live under `src/`; importing them does not register an extension.
 
-## Bot infrastructure and Pi integration
+## One project-thread system
 
 ```text
 src/agent-bridge/
-  daemon.ts          Bun CLI lifecycle and the sole Telegram poller
-  server.ts          Node-compatible private IPC, ownership, cancellation and reverse RPC
-  frontend.ts        injected agent capabilities and conversation frontend boundary
-  protocol.ts        runtime-neutral validated contracts
-  client.ts          portable IPC and active transcription backend registration
-  config.ts          private environment loading, data-path preparation and daemon config
-  telegram/          Telegram authorization, routing, HTTP, media, menus and streaming
-  store.ts           project/conversation/session associations and durable reply outbox
+  daemon.ts          Telegram poller and CLI lifecycle/composition
+  server.ts          portable private IPC, writer ownership, cancellation, reverse RPC
+  frontend.ts        injected backend, frontend and capability interfaces
+  protocol.ts        runtime-neutral validated IPC contracts
+  client.ts          portable IPC and active transcription-provider registration
+  config.ts          private environment, data-path preparation and daemon config
+  store.ts           project/thread/session associations and durable reply outbox
+  telegram/          Telegram wire normalization, HTTP/media, menus and delivery
+  discord/           Discord wire adapter, REST, Gateway state helper and thread transport
 
-src/bot/
-  index.ts           Pi registration
-  session-adapter.ts visible Pi attachment lifecycle
-  delivery.ts        shared preparation, preflight, acknowledgement, cancellation and output attribution
-  controls.ts        shared reverse-RPC validation, model selection and busy policy
-  inbox.ts           ordered Pi submission and message_start acknowledgement
-  messages.ts        prepared files to Pi content; Pi messages to plain text
-  status.ts          Pi model, thinking, usage, and context snapshots
-  tools.ts           attachment tool wrappers around the IPC client
-  thread-tools.ts    explicit communication tools and bounded native-history projection
+src/bot/            shared bot services (no Pi SDK dependency):
+  runtime.ts          saved-thread registration, single-flight startup, FIFO and cancellation
+  commands.ts         project command parsing, directory binding and help
+  command-service.ts  shared admission, Main/reply targeting, commands and session controls
+  thread-operations.ts scoped list/peek/create/message/stop/reply operations
+
+src/bot/            Pi-specific integration:
+  index.ts            extension registration
+  session-adapter.ts  terminal saved-thread registration and clean writer handoff
+  delivery.ts         preparation, preflight, acknowledgement and cancellation
+  controls.ts         reverse-RPC validation, model selection and busy policy
+  inbox.ts            ordered custom-message submission and acknowledgement
+  messages.ts         prepared local files to Pi content; history text projection
+  status.ts           Pi model/thinking/usage/context snapshots
+  tools.ts            file-send tool wrapper around IPC
+  thread-tools.ts     explicit communication tools and bounded native-history projection
+
+src/pi-backend/
+  index.ts            native saved SDK sessions with parallel tools and normal resources
 ```
 
-`extensions/bot.ts` calls `registerBot()` for optional visible-session attachments. The CLI composition root injects `src/pi-backend/index.ts`: independent native SDK sessions with explicit `agent.toolExecution = "parallel"`, normal JSONL/auth/resources, and per-session bridge tools. Runtime-neutral daemon/IPC infrastructure does not import the SDK or `src/bot/`. The IPC server receives a frontend implementation rather than importing Telegram or SQLite. The Pi integration imports only `agent-bridge/client.ts` and `agent-bridge/protocol.ts`, never the daemon, SQLite, or Telegram HTTP helpers. Boundary tests enforce those dependencies.
+The daemon injects a native backend and a platform frontend. Telegram and Discord frontends compose the same `BotRuntime`, `BotCommandService` and `ThreadOperations`; they do not implement separate saved-thread lifecycles. Platform-local transports own wire destinations, safe mentions, anchors, chunking and acknowledged message mappings. `telegram/threads.ts` and `agent-bridge/control.ts` are compatibility reexports of shared services, not duplicate implementations.
 
-Channels/topics bind to project directories and saved default conversations; tracked replies/native threads select independent saved sessions. Each worker persists its own cwd, optionally an agent-created worktree. The existing `task_<id>` conversation identifiers preserve history rather than introducing a separate task lifecycle. Live attachments are keyed by conversation route, not owner. Group attachment validates Pi's canonical working directory and current project binding. Owners authorize attachment and controls; they are not the session routing key. Bound DMs also receive managed conversations; explicit visible-session owner DMs use separate routes. The running daemon always has a native session backend; visible attachments are optional routes within that same daemon, not a second manual-only operating mode. Recognized Telegram commands have the same meaning with or without a visible attachment. Managed startup is single-flight per route, not serialized per project; opaque startup tokens and lifecycle generations fence input and attachment after stop/release/unbind, including input waiting for an earlier shutdown. No process workers, session caps, sandboxing, or automatic worktrees are added.
+Runtime-neutral service modules do not import Pi SDKs. The terminal extension's runtime graph reaches bridge infrastructure only through portable `client.ts`/`protocol.ts`; it never loads SQLite, daemon composition, shared daemon services or platform HTTP helpers. Boundary tests check both these graphs. The IPC server receives an injected frontend rather than importing Telegram or SQLite.
 
-## IPC contract
+The shipped daemon runs Telegram. The Discord adapter and Gateway state helper are offline-tested, but production socket/timer/config orchestration, native-thread wire aliases and inbound media are still host-integration work; see [Discord status](agent-bridge/discord.md).
 
-The daemon sends prepared prompts: opaque turn IDs, text, and absolute image-file paths. Image bytes do not travel in JSON; Pi reads the local files into its image content type.
+## Spaces, Main, and siblings
 
-Pi implements agent capabilities through reverse RPC: snapshot, bounded history peek, model selection, thinking selection, abort, compaction, and new session. The daemon renders Telegram commands and menus using those capabilities. It does not receive model credentials or invoke Pi APIs.
+DMs, groups and topics bind to ordinary directories, including `~`. Each project-space binding has its own saved Main. Plain input and controls select Main; tracked replies select their exact saved thread. Unknown explicit targets fail closed. `/new` and `create_thread` create siblings without replacing Main. There is no sticky worker selection or special owner-DM route.
 
-Pi sends normalized acknowledgement, settlement and delivery-error events. Managed/task hosts suppress ordinary text events. Their agents explicitly request user replies, peer messages, thread creation/inspection/stop, attachments or transcription—not arbitrary platform API calls. Minimal input envelopes expose sender and replyable message IDs; credentials, raw updates and wire API methods remain daemon-owned. The frontend validates every reply destination and mention within the bound project space.
+Saved terminal sessions register as siblings when their canonical cwd uniquely matches a bound space. `/bot [platform/space/channel] [owner ID]` reports status or resolves ambiguity. Public attachment/release commands are absent. The internal IPC connection is a single-writer lease for an exact route, saved session ID/file, cwd and owner. Session/file reuse across routes is refused. A clean terminal exit allows managed continuation; unconfirmed terminal loss blocks revival until that exact writer reconnects and stops cleanly.
 
-Both directions validate bounded NDJSON frames. Tool cancellation carries a request ID and aborts that daemon request. Detach aborts the attachment's requests and frontend work. Long transcription cannot block control messages or reverse RPC replies. Large tool transcripts use a private local file rather than an oversized frame.
+Thread scope is the originating project space, not shared cwd. A worker may choose another existing directory, including an agent-created worktree, without gaining communication access to another space. Owners authorize local binding and session controls; they are not routing keys. Independent threads may belong to one owner.
 
-## Telegram ownership
+Startup is single-flight per thread, not serialized by project. Opaque startup tokens and lifecycle generations fence late input/registration after stop/unbind. There are no subprocess workers, session caps, filesystem isolation or automatic worktrees. Agents explicitly coordinate shared-resource changes.
 
-The daemon holds a per-bot OS lock before polling or registering commands. Token rotation does not create a second identity. This is a local lock, not a distributed lease: HTTP 409 from another machine stops polling. The daemon refuses configured webhooks.
+## IPC and private output
 
-`telegram/schemas.ts` validates Telegram wire values. `api.ts` handles HTTP, timeouts, and redacted failures; `client.ts` handles media, safe retries and conversation-bound destination/cancellation guards using the real transport. `telegram/frontend.ts` owns Telegram dispatch, authorization, conversation/session composition and outbox delivery. It maps unthreaded input to the bound space's default conversation, and tracked replies to their exact sessions. `telegram/threads.ts` implements project-space-scoped explicit conversation operations and reply anchors. A tracked reply continues its conversation even when the bot is mentioned again. Only explicitly bound chats/topics are active. `/new` creates another conversation; command scoping is separate from ordinary routing.
+The daemon sends opaque turn IDs, prepared text and absolute image-file paths. Pi reads images locally; raw wire updates and model credentials never travel through the bridge.
 
-Uncertain message-creation outcomes are not automatically resent. Explicit rate-limit rejections can retry. The durable reply outbox becomes non-retryable before publication, so a crash or failed local result commit cannot automatically duplicate that reply. A crash before publication can instead leave an acknowledgement missing; explicit user sends and legacy DM streaming use their separate frontend queues.
+Reverse RPC exposes bounded session snapshots/history, validated model/thinking selection, abort and compaction. Saved threads refuse destructive session-reset RPC. Telegram renders menus; Discord uses textual controls backed by the same capabilities.
 
-## Input lifecycle
+Pi sends acknowledgement, delivery-error, busy and settled events. Ordinary assistant text, thinking and tool results remain private for both managed and terminal threads. Explicit operations publish user replies, peer input, files or thread anchors; they cannot invoke arbitrary platform API methods. Minimal input envelopes identify author, peer and replyable message IDs without exposing credentials or raw platform payloads.
 
-A per-conversation generation-fenced input FIFO orders user and peer reservations through startup; the Telegram frontend then reserves positions before downloads, transcription, or album debounce. Prepared prompts leave in FIFO order. Controls and picker callbacks use a separate lane, so stop remains available during preparation. Both native and visible Pi hosts use the same delivery controller; `/stop` cancels queued preparation and authentication even while Pi is idle, fences late completions, and still allows fresh input.
+Both directions validate bounded NDJSON. A tool cancellation ID aborts its exact daemon request. Writer disconnection aborts its outstanding requests and frontend work. Long transcription cannot block controls; oversized transcript output uses a private local file reference. Shared error wrapping preserves `unknownOutcome`, preventing unsafe retries across the transport/IPC boundary.
 
-Pi submits prepared prompts as SDK custom messages with opaque turn IDs in validated details. This bypasses input-hook text transformations. Before submission, asynchronous preflight checks model/auth availability and attachment identity. `message_start` acknowledges the matching ID; preflight failure or settlement without acknowledgement reports a delivery error and releases the FIFO without blindly retrying. The SDK send is fire-and-forget, not an acknowledgement. During streaming, input uses steering. During compaction or other non-streaming busy states, input waits; outcome hooks schedule delivery after Pi clears its busy state.
+## Input and writer lifecycle
 
-Acknowledgement sends the opaque turn ID back to the daemon for preparation accounting and typing. Chat/topic scope is fixed. Explicit text tools choose a validated message target; ordinary assistant output is private. Turn-time uploads capture the current input's anchor; uploads outside a bot turn have no stale anchor. Legacy owner-DM streaming retains captured turn attribution. Detach clears queued prompts and route mappings, and visible task detach stops its writer before handoff; legacy DM input may settle locally without publishing through a later attachment. Unrelated terminal or extension input ends the bot's reply attribution before subsequent assistant output. Neither inbox is crash-durable.
+A generation-fenced per-thread FIFO orders user and peer reservations through startup. Platform sessions reserve positions before slow media preparation. Controls use a separate lane. `/stop` fences the runtime FIFO even for a live writer, cancels prepared/auth/media/album work and aborts native queues. Late completion cannot deliver stopped input; later fresh input can proceed.
 
-Successful connection intent retains the selected route and owner in validated Pi process memory. DM intent follows `/new`, `/resume`, `/fork`, and `/reload`. A saved group session can reconnect after reload, but another session cannot silently replace its durable association. The owner explicitly releases a group conversation before attaching a replacement. Handoff waits for in-flight Pi mutations and acknowledged daemon release. Explicit disconnect, quit, attachment failure, or unexpected socket closure clears intent; no reconnect loop runs.
+Pi submits SDK custom messages with validated opaque turn IDs. Async preflight checks model/auth and writer identity. Matching `message_start` acknowledges receipt; failure or settlement without acknowledgement reports once and releases the FIFO instead of retrying uncertain work. Steering is used during active runs; compaction/busy states delay delivery until idle. Recorded input is not crash-replayed.
 
-## Output lifecycle
+Handoff invalidates stale tools/provider captures and waits for native abort, queue clearing, full settlement and started model/compaction mutations before confirming release. A failed handoff remains a closed barrier. Reload may restore only the same saved identity; new/resumed/forked sessions do not inherit the previous thread. Unrelated terminal input ends bot-turn attribution without changing project membership.
 
-Managed/task agents publish only through explicit communication tools. Their ordinary text, thinking and tool output remains in native history. Finishing a turn changes status without sending an automatic completion summary. Explicit outgoing text is saved as targeted native tool details so authorized peers can peek it without exposing arbitrary tool data. The daemon chunks explicit replies and maps sent IDs to the authoring conversation. `telegram/preview.ts` remains for legacy owner-DM streaming, coalescing text into stable messages and throttled edits.
+## Delivery ownership
 
-The daemon starts typing after a turn acknowledgement and stops at settlement or detach. Settlement does not rebuild or resend final text. Polling, agent execution, and Telegram delivery remain separate lifecycles.
+Telegram holds a per-bot OS lock before polling; configured webhooks, authentication failures and cross-machine polling conflicts fail safely. Platform schemas validate wire values. HTTP/media helpers own redacted errors, deadlines, cancellations and safe retry classification.
 
-Whisper execution is shared through the runtime-neutral `audio-transcription/whisper.ts` helper. The portable bridge client owns registration/capture of the active transcription backend; no audio-extension module owns another feature's attachment state. One shared audio tool delegates to that captured backend when attached and uses local execution when detached. Registration happens against Pi's live tool inventory, after session handoff completes.
+Explicit replies map every acknowledged outgoing chunk, including successful prefixes of a later failed send. Current-writer checks fence stale publication/mappings after cancellation. Terminal anchor claims are persisted before network publication, so reconnect cannot automatically duplicate a possibly delivered anchor.
+
+The durable operational-reply outbox becomes non-retryable before sending. Only a definitively safe rejection can requeue it; uncertain sends or local commit failure do not. A crash before sending can leave an acknowledgement missing, intentionally preferred to duplication. Telegram can recover an ambiguous send's task mapping only from this bot's stored, uniquely identifying acknowledgement text.
+
+Turn completion changes status but does not publish a summary or notify a parent. Workers explicitly `message_thread` their requester. User publication requires `reply_message` or `bot_attach`. Authorized bounded peeks include ordinary history and explicit-send details, but omit thinking, raw tool results and arguments.
+
+Whisper execution uses the neutral `audio-transcription/whisper.ts` helper. The portable client owns active transcription-provider capture. The audio extension delegates to a captured provider when registered and uses local execution otherwise; daemon failures never trigger local fallback. Tool registration waits for session handoff and respects the existing live tool inventory.

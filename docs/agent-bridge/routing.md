@@ -5,13 +5,13 @@ chat/topic -> project directory + saved default Pi conversation
 conversation -> exact saved Pi session + its own working directory
 ```
 
-The production frontend is Telegram. The shared routing core also represents Discord channels/native threads and Slack channels/threads; those platform adapters are not shipped yet.
+The production daemon frontend is Telegram. An offline-tested [Discord adapter](discord.md) uses the same runtime and commands; production Gateway/config orchestration and native-thread wire aliases remain to be integrated. The domain also represents Slack, without a Slack adapter.
 
 ## Bind and talk
 
 A configured owner uses `/bind <directory>` in a DM, ordinary group, or forum topic. The directory is canonicalized on the daemon host. Telegram administrator status alone does not authorize local directory access.
 
-Every ordinary unthreaded message received in a bound space goes to its default conversation, including voice notes. An @mention is optional. Replies to mapped user or bot messages continue their exact conversation, bypassing the default. Replying to an untracked human message goes to the default; an unrecognized bot reply is not guessed into another conversation. Forum-topic creation messages are boundaries, not conversation parents. Unbound spaces remain inactive. BotFather privacy must be disabled (or the bot made an administrator) for Telegram to deliver ordinary group messages.
+Every ordinary unthreaded message received in a bound space goes to its default conversation, including voice notes. An @mention is optional. Replies to mapped user or bot messages continue their exact conversation, bypassing the default. Unknown explicit replies or native thread targets fail closed instead of falling back to Main. Forum-topic creation messages are boundaries, not conversation parents. Unbound spaces remain inactive. BotFather privacy must be disabled (or the bot made an administrator) for Telegram to deliver ordinary group messages.
 
 The default is per chat/topic and project binding, not per directory: two topics using the same repo have separate default conversations. `/new [request]` starts an independent conversation without replacing the default or erasing old sessions. Plain messages in bound DMs also go to their default rather than the most recently created worker.
 
@@ -19,7 +19,7 @@ Each first input starts a native SDK session automatically. SQLite retains proje
 
 ## Explicit communication tools
 
-Managed conversations and visible `task_` attachments have these tools:
+Managed and registered terminal threads have these tools:
 
 | Tool | Behavior |
 | --- | --- |
@@ -54,7 +54,7 @@ The bridge authors these fields; message text remains ordinary untrusted input. 
 
 ## Persistence, ordering, and compaction
 
-Sessions use Pi's saved JSONL files, auth, settings, providers, tools, extensions, prompts and skills. Noninteractive startup respects saved project trust and does not approve confirmations. Only pi-tools' visible-session attachment entrypoint is excluded from managed sessions. Managed attachment and transcription state is session-local.
+Sessions use Pi's saved JSONL files, auth, settings, providers, tools, extensions, prompts and skills. Noninteractive startup respects saved project trust and does not approve confirmations. Only pi-tools' terminal registration entrypoint is excluded from managed sessions. Managed bridge and transcription state is session-local.
 
 Reconnection opens the exact associated file; it never selects the newest session. Missing or mismatched history fails explicitly instead of creating a replacement. A new native header is reserved before its association is returned. Stopped-history inspection is read-only and does not migrate or rewrite the file.
 
@@ -64,12 +64,14 @@ Default managed conversations use Pi's native compactor with a session-only thre
 
 ## Commands and ownership
 
-`/start` and `/help` show help. `/where` shows the binding. Standalone group `/status` reports project/backend/session count; reply `/status` reports that conversation's model and usage. `/model`, `/thinking`, `/compact` and `/stop` select a tracked reply or the only active conversation; ambiguity asks the user to reply. In a bound DM, unthreaded controls select the default conversation. Telegram `/stop` aborts the turn but keeps the conversation available; the agent tool `stop_thread` also unloads it.
+`/start` and `/help` show help. `/where` shows the binding, space key and user ID. `/threads` lists Main and siblings. Plain `/status`, `/model`, `/thinking`, `/compact` and `/stop` target Main; a tracked reply selects its exact thread. Controls never select an arbitrary active worker or create Main merely to inspect it. Telegram `/stop` aborts current/queued work but keeps a live thread available; the agent tool `stop_thread` also unloads it.
 
 A configured conversation starter owns its controls; otherwise the first configured bot owner does. Other group members may submit input but cannot directly change models or abort a session. Each private conversation belongs to its configured owner.
 
-`/unbind` cancels startup and live preparation, disconnects this space's sessions, and keeps history and associations. Rebinding another project never transfers old conversations. Advanced `/release` explicitly clears a saved association for deliberate replacement; it is not required for ordinary stop/revive or `/new`.
+`/unbind` cancels startup and live preparation, unloads this space's sessions, and keeps history and associations. Rebinding another project never transfers old threads. There is no public release/replacement workflow.
 
-Optional visible attachment uses `/bot-connect`. A second writer is rejected by bridge session identity. Stopping a visible thread waits for agent abort before detaching and permitting managed revival; detach also stops that visible task's bot work. Unexpected visible-session EOF or daemon loss keeps a durable writer lease: automatic revival is blocked until that visible session reconnects and confirms a clean handoff, or `/release` chooses a new saved file. Never independently open a live session file for another writer.
+Saved terminal sessions automatically register as sibling threads when their canonical cwd uniquely matches a bound project space. Pi `/bot [platform/space/channel] [owner ID]` reports the thread or resolves ambiguity using the space key from `/where`. Terminal siblings do not replace Main. DMs use exactly the same binding and thread semantics; `/bind ~` is valid.
+
+A second writer is rejected by saved session ID/file and route ownership. Stopping a terminal thread waits for agent abort and queue settlement before permitting managed revival. Unexpected terminal EOF or daemon loss keeps a durable writer lease: automatic revival is blocked until that exact terminal session reconnects and confirms a clean exit. Never independently open a live session file for another writer. Terminal reply anchors are claimed durably before sending and are not automatically retried after a possible send.
 
 The daemon hosts independent SDK sessions in one process, with parallel tools per session and no session caps, project-wide queues, subprocess workers, filesystem isolation, automatic worktrees or filesystem coordinator. Agents decide whether to handle quick work themselves, delegate sustained work, and coordinate shared-resource changes. Herdr is not a runtime dependency.

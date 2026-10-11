@@ -32,6 +32,7 @@ export const PreparedPromptSchema = v.object({
 export type PreparedPrompt = v.InferOutput<typeof PreparedPromptSchema>;
 export const AgentOutputSchema = v.variant("type", [
   v.object({ type: v.literal("turn-start"), turnId: identifier }),
+  v.object({ type: v.literal("run-state"), running: v.boolean() }),
   v.object({ type: v.literal("text-start") }),
   v.object({ type: v.literal("text-update"), text: v.string() }),
   v.object({ type: v.literal("text-end"), text: v.string(), error: v.optional(v.string()) }),
@@ -144,6 +145,8 @@ export const ClientFrameSchema = v.variant("type", [
     cwd: v.optional(LocalPathSchema),
     attachmentToken: v.optional(identifier),
     sessionFile: v.optional(LocalPathSchema),
+    space: v.optional(identifier),
+    name: v.optional(v.pipe(v.string(), v.maxLength(120))),
   }),
   v.object({ type: v.literal("status") }),
   v.object({ type: v.literal("stop") }),

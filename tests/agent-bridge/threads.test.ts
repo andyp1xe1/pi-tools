@@ -3,7 +3,8 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as v from "valibot";
-import { BridgeClient } from "../../src/agent-bridge/client.ts";
+import { BridgeClient, BridgeDeliveryUnknown } from "../../src/agent-bridge/client.ts";
+import { ThreadOperationError } from "../../src/bot/thread-operations.ts";
 import { MessageIdSchema, TaskIdSchema, TaskSchema } from "../../src/agent-bridge/domain.ts";
 import type { SessionBackend, SessionTarget } from "../../src/agent-bridge/frontend.ts";
 import type { PreparedPrompt } from "../../src/agent-bridge/protocol.ts";
@@ -110,7 +111,7 @@ test("create returns before worker startup; mixed user and peer communication ha
   const listing = await sender.client.request("listThreads",{}) as {id:string;status:string;cwd:string}[];
   expect(listing.find((thread) => thread.id === created.threadId)).toMatchObject({status:"starting",cwd:h.cwd});
   const root = Number(h.store.task(v.parse(TaskIdSchema,created.threadId))!.rootId);
-  expect(h.calls.find((call) => call.id === root)?.body).toMatchObject({text:"Worker",message_thread_id:42});
+  expect(h.calls.find((call) => call.id === root)?.body).toMatchObject({text:`Worker\n${created.threadId}`,message_thread_id:42});
   h.gates.get(created.threadId)!(); await until(() => h.peers.get(created.threadId)?.prompts.length === 1);
   const worker = h.peers.get(created.threadId)!;
   expect((worker.prompts[0].content[0] as {text:string}).text).toMatch(new RegExp(`^\\[thread from=${main.id}\\]`));
@@ -248,16 +249,42 @@ test("a second stop fences input already waiting for the first shutdown", async 
   expect((h.peers.get(child.threadId)!.prompts[0].content[0] as {text:string}).text).toContain("fresh reply");
 });
 
-test("delayed peer-delivery failures do not enter a replacement requester session", async () => {
+test("delayed peer-delivery failures do not enter a replacement writer for the exact saved requester", async () => {
   const h=await setup(new Set(["Held"]));const main=await h.main();const sender=h.peers.get(main.id)!;
   const child=await sender.client.request("createThread",{cwd:h.cwd,title:"Held",text:"initial"}) as {threadId:string};
-  await h.adapter.accept(input(2,"/release",1));await until(()=>!sender.client.isAttached);
+  await until(()=>h.gates.has(child.threadId));
+  const saved=h.store.taskAttachment(main.id)!;
+  await sender.client.disconnect({quiesced:true});await until(()=>!sender.client.isAttached);
   const prompts:PreparedPrompt[]=[];const replacement=new BridgeClient({socketPath:h.socketPath,onAttached(){},onPrompt:(p)=>prompts.push(p),onDisconnect(){},onAgentRequest:async()=>true});
+  const mismatch=new BridgeClient({socketPath:h.socketPath,onAttached(){},onPrompt(){},onDisconnect(){},onAgentRequest:async()=>true});
   try {
-    await replacement.attach("replacement","7",main.id,h.root,undefined,join(h.root,"replacement.jsonl"));
+    await expect(mismatch.attach("replacement","7",main.id,h.root,undefined,join(h.root,"replacement.jsonl"))).rejects.toThrow("different saved session or owner");
+    expect(h.store.taskAttachment(main.id)).toEqual(saved);
+    await replacement.attach(saved.sessionId,saved.ownerId,main.id,h.root,undefined,saved.sessionFile);
     await replacement.request("stopThread",{threadId:child.threadId});await Bun.sleep(30);
     expect(prompts).toHaveLength(0);
-  } finally {await replacement.disconnect();}
+    expect(h.store.taskAttachment(main.id)).toEqual(saved);
+    expect(h.peers.has(child.threadId)).toBe(false);
+  } finally {await mismatch.disconnect();await replacement.disconnect({quiesced:true});}
+});
+
+test("uncertain reply outcomes survive shared operation wrapping, frontend errors and portable IPC", async () => {
+  const h=await setup();const main=await h.main();const sender=h.peers.get(main.id)!;
+  let attempts=0;
+  h.adapter.runtime.transport.reply=async()=>{
+    attempts++;
+    throw Object.assign(new Error("accepted send with lost acknowledgement"),{unknownOutcome:true});
+  };
+  let failure:unknown;
+  try {
+    await h.adapter.threadOperation({userId:"7",routeId:main.id,frontend:h.adapter.identity},"replyMessage",{messageId:"1",text:"explicit reply"},new AbortController().signal);
+  } catch(error) {failure=error;}
+  expect(failure).toBeInstanceOf(ThreadOperationError);
+  expect((failure as ThreadOperationError).unknownOutcome).toBe(true);
+  expect(h.adapter.error(failure)).toEqual({message:"accepted send with lost acknowledgement",unknownOutcome:true});
+  await expect(sender.client.request("replyMessage",{messageId:"1",text:"another explicit send"})).rejects.toBeInstanceOf(BridgeDeliveryUnknown);
+  expect(attempts).toBe(2); // Exactly one transport attempt per explicit request, never an automatic retry.
+  expect(h.calls.filter(call=>call.method==="sendMessage")).toHaveLength(0);
 });
 
 test("stopping pending startup discards queued peer input without resurrecting it", async () => {
@@ -265,7 +292,9 @@ test("stopping pending startup discards queued peer input without resurrecting i
   const child=await sender.client.request("createThread",{cwd:h.cwd,title:"Held",text:"first"}) as {threadId:string};
   await sender.client.request("messageThread",{threadId:child.threadId,text:"second"});
   await sender.client.request("stopThread",{threadId:child.threadId});
-  await Bun.sleep(30);expect(h.peers.has(child.threadId)).toBe(false);expect(h.store.taskAttachment(v.parse(TaskIdSchema,child.threadId))).toBeNull();
+  await until(()=>sender.prompts.length===3);
+  expect(sender.prompts.slice(1).every(prompt=>(prompt.content[0] as {text:string}).text.includes(`thread=${child.threadId}`)&& (prompt.content[0] as {text:string}).text.includes("delivery=failed"))).toBe(true);
+  expect(h.peers.has(child.threadId)).toBe(false);expect(h.store.taskAttachment(v.parse(TaskIdSchema,child.threadId))).toBeNull();
   const list=await sender.client.request("listThreads",{}) as {id:string;status:string}[];
   expect(list.find((thread)=>thread.id===child.threadId)?.status).toBe("stopped");
 });

@@ -199,7 +199,7 @@ test("managed base prompt retains thread/default instructions and global appends
   assert.equal(contexts.length, 2); checkPrompt(contexts[1].systemPrompt);
 });
 
-test("visible task attachments enable explicit tools/privacy/peek while ordinary DM stays unchanged", async (t) => {
+test("terminal project threads, including bound DMs, expose scoped tools/private output and revoke them on handoff", async (t) => {
   Reflect.deleteProperty(globalThis, Symbol.for("pi-tools.agent-bridge.attachment-intent"));
   const handlers = new Map(), commands = new Map(), tools = new Map();
   let active = ["read"], client;
@@ -221,7 +221,7 @@ test("visible task attachments enable explicit tools/privacy/peek while ordinary
   const adapter = new BotSessionAdapter(pi, (options) => {
     client = {
       options, isAttached: false, outputs: [], requests: [],
-      attach: async (_session, userId, routeId) => { client.isAttached = true; options.onAttached({ userId, routeId, frontend: { id: "test", label: "Test" } }); },
+      attach: async (_session, userId, routeId) => { client.isAttached = true; const identity = { userId: userId ?? "77", routeId: routeId ?? "task_visible", frontend: { id: "test", label: "Test" } }; options.onAttached(identity); return identity; },
       disconnect: async () => { client.isAttached = false; }, output: (event) => client.outputs.push(event),
       request: async (operation, body) => { client.requests.push({ operation, body }); return { messageIds: ["94"] }; },
     };
@@ -231,10 +231,8 @@ test("visible task attachments enable explicit tools/privacy/peek while ordinary
   const emit = async (type, event = {}) => { for (const handler of handlers.get(type) ?? []) await handler({ type, ...event }, ctx); };
   t.after(async () => { await emit("session_shutdown", { reason: "quit" }); Reflect.deleteProperty(globalThis, Symbol.for("pi-tools.agent-bridge.attachment-intent")); });
   await emit("session_start", { reason: "startup" });
-  await commands.get("bot-connect").handler("77", ctx);
-  assert.equal(tools.has("reply_message"), false);
-  await commands.get("bot-disconnect").handler("", ctx);
-  await commands.get("bot-connect").handler("task_visible 77", ctx);
+  assert.deepEqual([...commands.keys()], ["bot"]);
+  await commands.get("bot").handler("telegram/77/general 77", ctx);
   assert.ok(THREAD_TOOL_NAMES.every((name) => active.includes(name)));
   const prompt = await handlers.get("before_agent_start")[0]({ systemPrompt: "base" });
   assert.match(prompt.systemPrompt, /Thread ID: task_visible/); assert.match(prompt.systemPrompt, /private/);
@@ -244,11 +242,10 @@ test("visible task attachments enable explicit tools/privacy/peek while ordinary
   for (let i = 0; i < 100 && !client.outputs.length; i++) await new Promise((resolve) => setTimeout(resolve, 1));
   const message = { role: "assistant", content: [{ type: "text", text: "private answer" }], stopReason: "stop" };
   await emit("message_start", { message }); await emit("message_update", { message }); await emit("message_end", { message }); await emit("agent_settled");
-  assert.deepEqual(client.outputs.map((event) => event.type), ["turn-start", "settled"]);
+  assert.deepEqual(client.outputs.map((event) => event.type), ["turn-start", "run-state", "settled"]);
   const history = await client.options.onAgentRequest({ operation: "peek", body: { limit: 1 } });
   assert.equal(history.messages[0].text, "saved visible history");
-  await commands.get("bot-disconnect").handler("", ctx);
+  await emit("session_shutdown", { reason: "quit" });
   assert.ok(THREAD_TOOL_NAMES.every((name) => !active.includes(name)));
-  await commands.get("bot-connect").handler("77", ctx);
-  await assert.rejects(tools.get("reply_message").execute("tool", { messageId: "93", text: "wrong attachment" }), /task attachment/);
+  await assert.rejects(tools.get("reply_message").execute("tool", { messageId: "93", text: "stale saved thread" }), /saved project thread/);
 });

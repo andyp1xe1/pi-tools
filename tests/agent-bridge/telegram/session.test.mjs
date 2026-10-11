@@ -37,6 +37,10 @@ test("static stickers are inline images; animated and video stickers remain corr
  assert.equal(h.prompts[2].content.length,1);assert.match(h.prompts[2].content[0].text,/sticker-3\.webm/);
 });
 
+test("plain stop is ordinary Main input, not an unfenced control alias",async t=>{
+ const h=fixture(t);h.session.receive(dm(1,"stop"));await until(()=>h.prompts.length===1);
+ assert.equal(h.prompts[0].content[0].text,"[telegram] stop");assert.equal(h.commands.length,0);
+});
 test("stop cancels in-flight voice and queued text without poisoning later input",async t=>{
  const h=fixture(t);let complete,voiceSignal;
  h.transport.transcribeAudio=async(_path,_model,_language,signal)=>{voiceSignal=signal;return new Promise(resolve=>complete=resolve);};
@@ -60,17 +64,19 @@ test("voice transcription inherits daemon defaults and carries cancellation sign
  const call=h.calls.find(c=>c.method==="transcribe");assert.equal(call.model,undefined);assert.equal(call.language,undefined);assert.ok(call.signal instanceof AbortSignal);
  assert.match(h.prompts[0].content[0].text,/Local transcript of voice-1.ogg/);await h.session.close();assert.equal(call.signal.aborted,true);
 });
-test("streaming, typing, final errors and attribution live in Telegram frontend",async t=>{
+test("assistant output is always private while typing and settlement errors retain exact attribution",async t=>{
  const h=fixture(t);h.session.receive(dm(1,"request"));await until(()=>h.prompts.length===1);const id=h.prompts[0].id;
  h.session.output({type:"text-start"});h.session.output({type:"text-end",text:"terminal-only"});await tick();assert.equal(h.calls.length,0);
- h.session.output({type:"turn-start",turnId:id});h.session.output({type:"text-start"});h.session.output({type:"text-end",text:"answer",error:"agent failed"});h.session.output({type:"settled"});
- await until(()=>h.calls.some(c=>c.body?.text==="agent failed"));assert.ok(h.calls.some(c=>c.method==="sendChatAction"));assert.ok(h.calls.some(c=>c.body?.text==="answer"));
+ h.session.output({type:"turn-start",turnId:id});h.session.output({type:"text-start"});h.session.output({type:"text-end",text:"answer",error:"private assistant error"});h.session.output({type:"settled",error:"agent failed"});
+ await until(()=>h.calls.some(c=>c.body?.text==="agent failed"));assert.ok(h.calls.some(c=>c.method==="sendChatAction"));assert.equal(h.calls.some(c=>c.body?.text==="answer"||c.body?.text==="private assistant error"),false);
  assert.deepEqual(h.calls.find(c=>c.body?.text==="agent failed").body.reply_parameters,{message_id:1,allow_sending_without_reply:false});
 });
 test("all retained bot controls use agent capabilities rather than Pi SDK",async t=>{
  const h=fixture(t);for(const [i,command] of ["/help","/start","/status","/compact","/new","/model","/thinking"].entries())h.session.receive(dm(i+1,command));
- await until(()=>h.commands.length===2 && h.calls.some(c=>c.body?.reply_markup));
- assert.deepEqual(h.commands,[ ["compact"],["new"] ]);assert.ok(h.calls.some(c=>c.body?.text==="Model: p/m"));assert.equal(h.prompts.length,0);
+ await until(()=>h.commands.length===1 && h.calls.some(c=>c.body?.reply_markup));
+ assert.deepEqual(h.commands,[ ["compact"] ]);assert.ok(h.calls.some(c=>c.body?.text==="Model: p/m"));
+ assert.ok(h.calls.some(c=>c.body?.text==="Use /new in the project space to create a separate saved thread."));
+ assert.equal(h.commands.some(command=>command[0]==="new"),false);assert.equal(h.prompts.length,0);
 });
 test("expired menus and other users cannot issue model changes",async t=>{
  const h=fixture(t);h.session.receive({update_id:1,callback_query:{id:"old",from:{id:7,is_bot:false},message:{message_id:1,chat:{id:7,type:"private"}},data:"bridge:1"}});

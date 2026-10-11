@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as v from "valibot";
 import { BridgeClient, registerBridgeTranscription } from "../agent-bridge/client.ts";
@@ -6,6 +7,7 @@ import {
   AgentOperationBodies,
   type AgentOutput,
   type AgentRequest,
+  bridgeSocketPath,
   type ServerFrame,
   ThinkingLevelSchema,
 } from "../agent-bridge/protocol.ts";
@@ -151,8 +153,7 @@ export class BotSessionAdapter {
   }
   private output(event: AgentOutput, ctx: ExtensionContext): void {
     if (!this.isCurrentRuntime() || !this.connection?.isAttached) return;
-    if (this.identity?.routeId?.startsWith("task_") && ["text-start", "text-update", "text-end"].includes(event.type))
-      return;
+    if (["text-start", "text-update", "text-end"].includes(event.type)) return;
     try {
       this.connection.output(event);
     } catch (error) {
@@ -162,7 +163,8 @@ export class BotSessionAdapter {
   private setThreadToolsActive(active: boolean): void {
     if (active && !this.threadToolsRegistered) {
       registerThreadTools(this.pi, () => {
-        if (!this.identity?.routeId?.startsWith("task_")) throw new Error("Thread tools require a task attachment");
+        if (!this.identity?.routeId?.startsWith("task_"))
+          throw new Error("Thread tools require a saved project thread");
         return this.captureConnection();
       });
       this.threadToolsRegistered = true;
@@ -177,7 +179,7 @@ export class BotSessionAdapter {
     const connection = this.connection;
     const generation = this.generation;
     if (!this.isCurrentRuntime() || !connection?.isAttached)
-      throw new Error("Agent bridge is not attached. Run /bot-connect first.");
+      throw new Error("No bot project space is available. Bind this directory in the bot, then use /bot.");
     const check = (): void => {
       if (
         generation !== this.generation ||
@@ -262,8 +264,8 @@ export class BotSessionAdapter {
     this.connection = undefined;
     this.invalidateAttachment();
     this.disconnectingPromise = (async () => {
-      // Do not release the saved task file to the daemon until its visible
-      // writer and queues have stopped. Standalone DM detach stays non-aborting.
+      // Do not release the saved thread file to the daemon until its terminal
+      // writer and queues have stopped. Unregistered connections own no writer.
       if (task && ctx) {
         await this.stopTaskWriter(ctx, waitForIdle);
         await this.waitForMutations();
@@ -288,6 +290,8 @@ export class BotSessionAdapter {
     userId?: string,
     routeId?: string,
     waitForIdle?: () => Promise<void>,
+    registration?: { space?: string; name?: string },
+    quiet = false,
   ): Promise<void> {
     if (!ctx.sessionManager.getSessionFile()) {
       ctx.ui.notify("Bot conversations require a saved Pi session. Restart Pi without --no-session.", "warning");
@@ -300,7 +304,7 @@ export class BotSessionAdapter {
     await this.waitForMutations();
     if (runtimeId !== this.runtimeId || pendingGeneration !== this.generation || !this.isCurrentRuntime()) return;
     if (this.connection?.isAttached) {
-      ctx.ui.notify("This Pi session is already attached. Run /bot-disconnect before changing owner.", "info");
+      ctx.ui.notify(`Thread: ${this.identity?.routeId ?? "unknown"}. Exit Pi to continue it through the bot.`, "info");
       return;
     }
     if (this.connectingPromise) return this.connectingPromise.catch(() => undefined);
@@ -310,6 +314,7 @@ export class BotSessionAdapter {
       onAttached: (frame) => {
         if (
           !current() ||
+          !frame.routeId?.startsWith("task_") ||
           (userId !== undefined && frame.userId !== userId) ||
           (routeId !== undefined && frame.routeId !== routeId)
         )
@@ -363,13 +368,15 @@ export class BotSessionAdapter {
         ctx.cwd,
         undefined,
         ctx.sessionManager.getSessionFile(),
+        registration,
       )
       .then(() => undefined);
     this.updateStatus(ctx);
     try {
       await this.connectingPromise;
     } catch (error) {
-      if (this.connection === connection && this.isCurrentRuntime()) ctx.ui.notify(this.errorMessage(error), "error");
+      if (!quiet && this.connection === connection && this.isCurrentRuntime())
+        ctx.ui.notify(this.errorMessage(error), "error");
     } finally {
       this.connectingPromise = undefined;
       if (this.connection === connection && this.isCurrentRuntime()) this.updateStatus(ctx, this.lastConnectionError);
@@ -408,42 +415,32 @@ export class BotSessionAdapter {
         if (this.isCurrentRuntime() && this.connection?.isAttached) this.inbox.resume(ctx);
         return pending || running;
       },
-      newSession: () => {
-        if (this.identity?.routeId?.startsWith("task_")) return false;
-        // Let the portable client write agent-result before this action detaches it.
-        this.queueNewSession(ctx);
-        return true;
-      },
+      newSession: () => false,
     });
   }
 
-  private queueNewSession(ctx: ExtensionContext): void {
-    const generation = this.generation;
-    const timer = setTimeout(() => {
-      this.queuedActions.delete(timer);
-      if (generation !== this.generation || !this.isCurrentRuntime() || !this.connection?.isAttached) return;
-      try {
-        this.pi.sendUserMessage("/bot-new", { expandPromptTemplates: true });
-      } catch (error) {
-        this.updateStatus(ctx, this.errorMessage(error));
-      }
-    }, 0);
-    this.queuedActions.add(timer);
-  }
-
   private registerCommands(): void {
-    this.pi.registerCommand("bot-connect", {
-      description: "Attach this Pi session: [task_<id>] [owner ID]",
+    this.pi.registerCommand("bot", {
+      description: "Show this project thread, or choose a bound space: [platform/space/channel] [owner ID]",
       handler: async (args, ctx) => {
         const parts = args.trim() ? args.trim().split(/\s+/) : [];
-        const routeId = parts[0]?.startsWith("task_") ? parts.shift() : undefined;
-        const userId = parts.shift();
+        if (this.connection?.isAttached && !parts.length) {
+          ctx.ui.notify(
+            `Thread: ${this.identity?.routeId}\nBot: ${this.identity?.frontend.label}\nIncoming: ${this.inbox.count}\nExit Pi to continue this saved thread through the bot.`,
+            "info",
+          );
+          return;
+        }
+        const [space, ownerId] = parts;
         if (
-          parts.length ||
-          (routeId && !/^task_[a-z0-9_-]+$/i.test(routeId)) ||
-          (userId && (userId.length > 128 || !/^[^\s]+$/.test(userId)))
+          parts.length > 2 ||
+          (space && !/^(telegram|discord|slack)\/[^/]+\/[^/]+$/.test(space)) ||
+          (ownerId && ownerId.length > 128)
         ) {
-          ctx.ui.notify("Usage: /bot-connect [task_<id>] [owner ID]", "warning");
+          ctx.ui.notify(
+            "Usage: /bot [platform/space/channel] [owner ID]. Use /where in the bot for the space key.",
+            "warning",
+          );
           return;
         }
         if (this.needsIdleBeforeAttach) {
@@ -453,52 +450,7 @@ export class BotSessionAdapter {
           this.needsIdleBeforeAttach = false;
         }
         if (!this.runtimeClaimed) this.claimRuntime();
-        await this.attach(ctx, userId, routeId, () => ctx.waitForIdle());
-      },
-    });
-    this.pi.registerCommand("bot-disconnect", {
-      description: "Clear attachment intent and detach this Pi session",
-      handler: async (_args, ctx) => {
-        this.setOwnerIntent();
-        this.generation += 1;
-        await this.disconnect();
-        this.lastConnectionError = undefined;
-        this.updateStatus(ctx);
-      },
-    });
-    this.pi.registerCommand("bot-status", {
-      description: "Show local agent-bridge attachment state",
-      handler: async (_args, ctx) =>
-        ctx.ui.notify(
-          [
-            `state: ${this.connection?.isAttached ? "attached" : this.connectingPromise ? "attaching" : "detached"}`,
-            `frontend: ${this.identity?.frontend.label ?? "unknown"}`,
-            `route: ${this.identity?.routeId ?? "unknown"}`,
-            `owner: ${this.identity?.userId ?? "unknown"}`,
-            `replying: ${this.activeTurnId ? "yes" : "no"}`,
-            `incoming messages waiting for pi: ${this.inbox.count}`,
-            ...(this.lastConnectionError ? [`last error: ${this.lastConnectionError}`] : []),
-          ].join(" | "),
-          "info",
-        ),
-    });
-    this.pi.registerCommand("bot-new", {
-      description: "Start a new Pi session and reattach to agent-bridge",
-      handler: async (_args, ctx) => {
-        if (this.identity?.routeId?.startsWith("task_")) {
-          ctx.ui.notify(
-            "This thread retains its Pi session identity. Reply /release in the bot conversation before changing its association, then /bot-connect explicitly.",
-            "warning",
-          );
-          return;
-        }
-        const generation = this.generation;
-        await ctx.waitForIdle();
-        if (generation !== this.generation || !this.isCurrentRuntime() || !this.connection?.isAttached) return;
-        const parentSession = ctx.sessionManager.getSessionFile();
-        const result = await ctx.newSession({ ...(parentSession ? { parentSession } : {}) });
-        if (result.cancelled && generation === this.generation && this.isCurrentRuntime())
-          ctx.ui.notify("New bot session was cancelled.", "warning");
+        await this.attach(ctx, ownerId, undefined, () => ctx.waitForIdle(), { space });
       },
     });
   }
@@ -524,9 +476,12 @@ export class BotSessionAdapter {
       const ownerId = intent.ownerId;
       if (
         ownerId !== undefined &&
-        (!intent.routeId?.startsWith("task_") || intent.sessionId === ctx.sessionManager.getSessionId())
+        intent.routeId?.startsWith("task_") &&
+        intent.sessionId === ctx.sessionManager.getSessionId()
       )
         await this.attach(ctx, ownerId, intent.routeId);
+      else if (existsSync(bridgeSocketPath()) && ctx.sessionManager.getSessionFile())
+        await this.attach(ctx, undefined, undefined, undefined, undefined, true);
       else this.updateStatus(ctx);
     });
     this.pi.on("session_shutdown", async (event) => this.onSessionShutdown(event.reason));
@@ -551,6 +506,7 @@ export class BotSessionAdapter {
     this.pi.on("agent_start", async (_event, ctx) => {
       if (!this.isCurrentRuntime()) return;
       this.agentRunning = true;
+      this.output({ type: "run-state", running: true }, ctx);
       this.inbox.schedule(ctx);
       this.updateStatus(ctx);
     });
@@ -560,6 +516,7 @@ export class BotSessionAdapter {
     this.pi.on("agent_settled", async (_event, ctx) => {
       if (!this.isCurrentRuntime()) return;
       this.agentRunning = false;
+      this.output({ type: "run-state", running: false }, ctx);
       this.delivery.agentSettled(ctx);
     });
   }

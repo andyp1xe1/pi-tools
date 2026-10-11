@@ -13,6 +13,7 @@ test("Store still rejects linked or nonregular database and sidecar destinations
   try {
     const target = join(root, "untouched");
     writeFileSync(target, "do not change", { mode: 0o644 });
+    chmodSync(target, 0o644); // The caller may have a restrictive umask.
     for (const suffix of ["", "-wal", "-shm", "-journal"]) {
       for (const kind of ["symlink", "hardlink", "directory"]) {
         const directory = join(root, `${suffix || "database"}-${kind}`);
@@ -61,6 +62,43 @@ function createThreads(store: Store) {
   return ["10", "11"].map((id) => routed(router.route(input(id, { start: true }))).task);
 }
 
+test("saved-file ownership rejects lexical, symlink and hard-link aliases without modifying history", () => {
+  const root = mkdtempSync(join(tmpdir(), "bridge-session-alias-"));
+  const store = new Store(":memory:");
+  try {
+    const [first, second] = createThreads(store);
+    if (!first || !second) throw new Error("Missing thread fixtures");
+    const file = join(root, "native.jsonl");
+    writeFileSync(file, "saved history\n");
+    symlinkSync(file, join(root, "symlink.jsonl"));
+    linkSync(file, join(root, "hardlink.jsonl"));
+    const saved = { taskId: first.id, sessionId: "original", ownerId: "7", sessionFile: file };
+    store.attachTask(saved);
+    for (const alias of [`${root}//native.jsonl`, join(root, "symlink.jsonl"), join(root, "hardlink.jsonl")]) {
+      expect(store.attachmentForFile(alias)).toEqual(saved);
+      expect(() => store.attachTask({ taskId: second.id, sessionId: "different-header", ownerId: "7", sessionFile: alias })).toThrow("another thread");
+    }
+    expect(store.taskAttachment(first.id)).toEqual(saved);
+    expect(store.taskAttachment(second.id)).toBeNull();
+    expect(readFileSync(file, "utf8")).toBe("saved history\n");
+  } finally { store.close(); rmSync(root, { recursive: true }); }
+});
+
+test("terminal anchor claims survive reopen and cannot be automatically reclaimed", () => {
+  const root = mkdtempSync(join(tmpdir(), "bridge-anchor-"));
+  const path = join(root, "bridge.sqlite");
+  let store = new Store(path);
+  try {
+    const [first, second] = createThreads(store);
+    if (!first || !second) throw new Error("Missing thread fixtures");
+    expect(store.claimAnchor(first.id)).toBe(true);
+    expect(store.claimAnchor(first.id)).toBe(false);
+    store.close(); store = new Store(path);
+    expect(store.claimAnchor(first.id)).toBe(false);
+    expect(store.claimAnchor(second.id)).toBe(true);
+  } finally { store.close(); rmSync(root, { recursive: true }); }
+});
+
 test("threads have independent durable sessions, not a single session per owner", () => {
   const store = new Store(":memory:");
   try {
@@ -70,12 +108,13 @@ test("threads have independent durable sessions, not a single session per owner"
     expect(store.taskAttachment(first.id)).toBeNull();
     const sessionFile = "/sessions/saved.jsonl";
     store.attachTask({ taskId: first.id, sessionId: "session-a", ownerId: "7", sessionFile });
-    store.attachTask({ taskId: second.id, sessionId: "session-b", ownerId: "7", sessionFile });
+    expect(() => store.attachTask({ taskId: second.id, sessionId: "session-b", ownerId: "7", sessionFile })).toThrow("another thread");
+    store.attachTask({ taskId: second.id, sessionId: "session-b", ownerId: "7", sessionFile: "/sessions/second.jsonl" });
     store.attachTask({ taskId: first.id, sessionId: "session-a", ownerId: "7", sessionFile });
     expect(store.snapshot().attachments).toHaveLength(2);
     expect(store.taskAttachment(first.id)).toEqual({ taskId: first.id, sessionId: "session-a", ownerId: "7", sessionFile });
-    expect(() => store.attachTask({ taskId: first.id, sessionId: "different", ownerId: "7", sessionFile })).toThrow("another session");
-    expect(() => store.attachTask({ taskId: first.id, sessionId: "session-a", ownerId: "8", sessionFile })).toThrow("another session");
+    expect(() => store.attachTask({ taskId: first.id, sessionId: "different", ownerId: "7", sessionFile })).toThrow("another saved session");
+    expect(() => store.attachTask({ taskId: first.id, sessionId: "session-a", ownerId: "8", sessionFile })).toThrow("another saved session");
     store.detachTask(second.id);
     expect(() => store.attachTask({ taskId: second.id, sessionId: "session-a", ownerId: "7", sessionFile })).toThrow("another thread");
     store.detachTask(first.id);

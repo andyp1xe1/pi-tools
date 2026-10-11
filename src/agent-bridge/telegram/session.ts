@@ -5,7 +5,6 @@ import { TelegramClient, type TelegramConversation, type TelegramTransport } fro
 import { handleTelegramCommand, isControlMessage } from "./commands.ts";
 import { TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS } from "./constants.ts";
 import { TelegramPickers } from "./pickers.ts";
-import { TelegramPreview } from "./preview.ts";
 import type { TelegramMessage, TelegramUpdate } from "./schemas.ts";
 import { createTelegramTurn, type PendingTelegramTurn } from "./turn.ts";
 
@@ -21,20 +20,19 @@ interface Slot {
 /** One Telegram conversation frontend. No Pi SDK or agent-specific state. */
 export class TelegramSession {
   private closed = false;
+  private agentRunning = false;
   private readonly controller = new AbortController();
   private preparation = new AbortController();
   private readonly menus = new Set<number>();
   private readonly client: TelegramClient;
   private readonly chatId: number;
   private readonly pickers: TelegramPickers;
-  private readonly preview: TelegramPreview;
   private readonly slots: Slot[] = [];
   private readonly albums = new Map<string, Slot>();
   private readonly routes = new Map<string, ActiveTelegramTurn>();
   private readonly jobs = new Set<Promise<unknown>>();
   private active?: ActiveTelegramTurn;
   private typing?: ReturnType<typeof setInterval>;
-  private assistantError?: string;
   constructor(
     private readonly userId: number,
     private readonly agent: AgentPort,
@@ -59,13 +57,12 @@ export class TelegramSession {
       },
     });
     this.pickers = new TelegramPickers(agent, this.client);
-    this.preview = new TelegramPreview(this.client);
   }
   get isLive(): boolean {
     return this.current();
   }
   get isRunning(): boolean {
-    return !!this.active || this.slots.length > 0 || this.routes.size > 0;
+    return this.agentRunning || !!this.active || this.slots.length > 0 || this.routes.size > 0;
   }
   private current(): boolean {
     return !this.closed && this.agent.current() && (this.scope?.current() ?? true);
@@ -93,7 +90,9 @@ export class TelegramSession {
       )
         return;
       if (callback.from.id !== this.userId) {
-        this.run(this.client.answerCallbackQuery(callback.id, "Only the attachment owner can control this session."));
+        this.run(
+          this.client.answerCallbackQuery(callback.id, "Only the saved session owner can control this session."),
+        );
         return;
       }
       if (!this.menus.has(callback.message.message_id))
@@ -118,7 +117,11 @@ export class TelegramSession {
     if (isControlMessage(message)) {
       if (message.from.id !== this.userId) {
         this.run(
-          this.client.sendText(this.chatId, message.message_id, "Only the attachment owner can control this session."),
+          this.client.sendText(
+            this.chatId,
+            message.message_id,
+            "Only the saved session owner can control this session.",
+          ),
         );
         return;
       }
@@ -222,11 +225,11 @@ export class TelegramSession {
   }
   output(event: AgentOutput): void {
     if (!this.current()) return;
-    if (
-      this.conversation?.explicit &&
-      (event.type === "text-start" || event.type === "text-update" || event.type === "text-end")
-    )
+    if (event.type === "run-state") {
+      this.agentRunning = event.running;
       return;
+    }
+    if (event.type === "text-start" || event.type === "text-update" || event.type === "text-end") return;
     if (event.type === "delivery-error") {
       const route = this.routes.get(event.turnId);
       this.routes.delete(event.turnId);
@@ -245,39 +248,15 @@ export class TelegramSession {
       if (!route) throw new Error("Unknown bot turn");
       this.routes.delete(event.turnId);
       this.active = route;
-      this.assistantError = undefined;
       this.startTyping();
       return;
     }
     if (event.type === "settled") {
+      this.agentRunning = false;
       const route = this.active;
-      const error = event.error ?? this.assistantError;
       this.active = undefined;
-      this.assistantError = undefined;
       this.stopTyping();
-      this.run(
-        this.preview.waitForIdle().then(() => {
-          if (route && error && this.current())
-            return this.client.sendText(route.chatId, route.replyToMessageId, error);
-        }),
-      );
-      return;
-    }
-    if (!this.active) return;
-    switch (event.type) {
-      case "text-start":
-        this.assistantError = undefined;
-        this.preview.start(this.active.replyToMessageId);
-        break;
-      case "text-update":
-        this.preview.update(event.text);
-        this.preview.schedule(this.active.chatId, (error) => this.report(error));
-        break;
-      case "text-end":
-        this.assistantError = event.error;
-        this.preview.update(event.text);
-        this.run(this.preview.finalize(this.active.chatId));
-        break;
+      if (route && event.error) this.run(this.client.sendText(route.chatId, route.replyToMessageId, event.error));
     }
   }
   private startTyping(): void {
@@ -298,6 +277,7 @@ export class TelegramSession {
   }
   async close(): Promise<void> {
     this.closed = true;
+    this.agentRunning = false;
     this.controller.abort();
     this.stopTyping();
     for (const slot of this.slots) if (slot.timer) clearTimeout(slot.timer);
@@ -306,7 +286,6 @@ export class TelegramSession {
     this.routes.clear();
     this.menus.clear();
     this.pickers.clear();
-    await this.preview.stop();
     await Promise.allSettled(this.jobs);
   }
 }

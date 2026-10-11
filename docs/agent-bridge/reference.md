@@ -25,27 +25,27 @@ Commands accept a bot suffix, such as `/bind@YourBot ~/dev/pi-tools`. The adapte
 | `/where` | Reports the community ID, topic ID, directory, and sender's user ID. | Any human |
 | `/help`, `/start` | Reports the available commands. | Any human |
 | `/new [request]` | Starts a separate saved conversation. | Human group member / configured DM owner |
-| `/status` | Topic diagnostics, or session model/usage when replying to a conversation. | Topic: human; session: owner |
-| `/model`, `/thinking`, `/compact`, `/stop` | Controls the replied conversation, or the only active one. Ambiguity produces a scope instruction. | Attachment owner |
-| `/release` as a tracked reply | Detaches and clears the conversation's saved session association. | Attachment owner |
+| `/threads` | Lists Main and sibling saved threads with their activity. | Human member / configured DM owner |
+| `/status` | Main's model/usage, or the exact replied thread's session status. | Saved-session owner |
+| `/model`, `/thinking`, `/compact`, `/stop` | Controls Main, or the exact thread selected by a tracked reply. | Saved-session owner |
 
-`/bind` accepts absolute paths and paths that start with `~/`. Matching quotes allow spaces. The bridge resolves symlinks and checks that the directory exists. It does not run shell syntax, read repository contents, or create a worktree.
+`/bind` accepts absolute paths, `~`, and paths that start with `~/`. Matching quotes allow spaces. The bridge resolves symlinks and checks that the directory exists. It does not run shell syntax, read repository contents, or create a worktree.
 
 The same resolved directory has one project ID across topics. A topic cannot change directories without `/unbind`. A reply to an old task does not transfer that task to the new project.
 
-A mention outside a tracked chain starts a conversation. Replies to mapped user or bot messages continue it, including re-mentions of the bot. Plain input in a bound DM continues its latest conversation. Group chatter is ignored. Unknown slash commands in tracked input remain text; standalone unknown commands receive a help hint.
+Plain messages, including optional mentions, target Main in every bound space. Replies to mapped user or bot messages select their exact saved thread. Unknown explicit targets fail closed. Unknown slash commands receive a help hint rather than silently becoming agent input.
 
-Bound conversations automatically start/reopen independent native Pi SDK sessions with parallel tool execution. Exact session IDs and JSONL paths persist across restart. `/new [request]` starts another conversation without resetting history. Optional visible Pi attachment remains available through `/bot-connect task_<id> [owner ID]`. Old recorded inputs are never replayed.
+Bound threads automatically start/reopen independent native Pi SDK sessions with parallel tools. Exact session IDs and JSONL paths persist across restart. `/new [request]` creates a sibling without replacing Main. Saved terminal sessions register automatically in uniquely matching bound working directories; Pi `/bot [platform/space/channel] [owner ID]` reports the current thread or disambiguates registration. There are no public attachment commands or special owner-DM routes. Old recorded input is never replayed.
 
-All human members in a bound topic can submit conversation input. Only the attachment owner may operate group session controls and menus. Community admin status does not grant permission to change bindings. Binding explicitly authorizes managed sessions and live input from that chat/topic. There are no configured session caps, project-wide serialization, filesystem isolation, or automatic worktrees.
+All human members in a bound topic can submit conversation input. Only the configured saved-session owner may operate session controls and menus. Community admin status does not grant permission to change bindings. Binding explicitly authorizes managed sessions and live input from that chat/topic. There are no configured session caps, project-wide serialization, filesystem isolation, or automatic worktrees.
 
 ## Telegram limits
 
-The frontend accepts human input in ordinary groups and forum supergroups, plus configured-owner bound DMs. It excludes channel posts, bots, anonymous senders, and topic creation messages. Optional visible-session DM attachments remain supported. Native-managed group edits are not replayed as new input.
+The frontend accepts human input in ordinary groups and forum supergroups, plus configured-owner bound DMs. It excludes channel posts, bots, anonymous senders, and topic creation messages. DMs are ordinary bindable project spaces, including a binding to `~`. Edits are not replayed as new input.
 
 A bot with privacy mode enabled can miss mentions and replies between users. Admin status provides broader visibility. Disabling privacy through BotFather requires re-adding the bot.
 
-Attached group conversations support text, captions, media downloads, albums and voice transcription. Group edits do not silently resubmit previously executed inputs. Explicit visible-session DMs support edits. Telegram's UTF-16 entity offsets identify mentions and commands.
+Project spaces support text, captions, media downloads, albums and voice transcription. Edits do not silently resubmit previously executed inputs. Telegram's UTF-16 entity offsets identify mentions and commands.
 
 General has the internal topic ID `general`. Replies there omit the outbound `message_thread_id` parameter. The bridge does not create topics.
 
@@ -56,13 +56,17 @@ General has the internal topic ID `general`. Replies there omit the outbound `me
 | `projects` | Project IDs, names, and resolved directories. |
 | `bindings` | Selected topics and their project IDs. |
 | `tasks` | Stable conversation IDs, project IDs, root messages, and creation times. |
-| `task_attachments` | Each managed conversation's exact saved agent session ID/file and authorized owner. |
+| `task_attachments` | Each saved thread's exact session ID/file and authorized owner. |
+| `default_threads` | Main per project-space binding. |
+| `thread_settings` | Saved cwd and optional creating thread. |
+| `visible_writers` | Durable unconfirmed terminal-writer leases. |
+| `thread_anchor_claims` | One-shot terminal anchor claims, persisted before network publication. |
 | `message_routes` | User and bot message IDs associated with tasks. |
 | `inputs` | Task messages in sequence order. |
 | `transport_cursors` | Polling offsets and their last update times. |
 | `outbox` | Replies, delivery states, attempts, and retry deadlines. |
 
-SQLite commits routing, input records, reply enqueueing, and cursor advancement together. The sole poller processes updates in order; its committed offset deduplicates replay without retaining a per-update ledger. The watermark cannot regress within an active epoch. Offsets expire after six idle days, before Telegram can reset update IDs after a week. The daemon expects the current database schema; it does not migrate older schemas.
+SQLite commits routing, input records, reply enqueueing, and cursor advancement together. The sole poller processes updates in order; its committed offset deduplicates replay without retaining a per-update ledger. The watermark cannot regress within an active epoch. Offsets expire after six idle days, before Telegram can reset update IDs after a week. Additive tables are created when the store opens; there is no general migration engine for incompatible historical schemas.
 
 Database files have mode `0600`. New database directories have mode `0700`. The bridge refuses database file links and directory paths that another user can replace. It does not change an existing parent directory's permissions.
 
@@ -70,7 +74,7 @@ Valibot validates Telegram responses and SQLite rows. Internal IDs have distinct
 
 ## Delivery and process limits
 
-The durable acknowledgement/control reply loop waits 3.1 seconds between send attempts; live streaming uses its own throttled frontend queue. Replies keep their topic and anchor. Deleted anchors fail delivery instead of producing an unthreaded reply.
+The durable acknowledgement/control reply loop waits 3.1 seconds between send attempts. Explicit thread replies use the transport's chunking and delivery guards; ordinary assistant output stays private. Replies keep their topic and anchor. Deleted anchors fail delivery instead of producing an unthreaded reply.
 
 Before calling Telegram, the outbox durably marks the reply as non-retryable (`failed`, with an unconfirmed-outcome explanation). A successful send changes it to `sent`. Only a transport failure known to be safe to retry can return it to `pending`; explicit rate limits set the retry delay. Errors `400` and `403` and uncertain creation outcomes remain `failed`, without automatic resend. A database error after an accepted send is not a transport failure and never requeues that send.
 

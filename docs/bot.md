@@ -1,19 +1,24 @@
 # Pi bot integration
 
-`extensions/bot.ts` registers the Pi integration from `src/bot/`. It uses the portable `src/agent-bridge/client.ts` over a private local socket. The [daemon](agent-bridge/reference.md) owns bot credentials, Telegram traffic, permissions, preparation, menus, and output delivery. Pi never polls Telegram or starts the daemon.
+`extensions/bot.ts` registers the Pi integration from `src/bot/`. It uses the portable `src/agent-bridge/client.ts` over a private local socket. The [daemon](agent-bridge/reference.md) owns credentials, platform traffic, media preparation, menus, and delivery. Pi never polls Telegram or starts the daemon.
 
-See [Telegram setup](agent-bridge/telegram.md) for configuration and startup and [code boundaries](architecture.md) for the two modules.
+See [Telegram setup](agent-bridge/telegram.md), [project/thread routing](agent-bridge/routing.md), [Discord adapter status](agent-bridge/discord.md), and [code boundaries](architecture.md).
 
-## Pi commands
+## Terminal sessions are saved threads
 
-| Command | Behavior |
-| --- | --- |
-| `/bot-connect [task_<id>] [owner ID]` | Attach this Pi session to a group conversation, or omit the task ID for the owner's DM. Multiple owners require an explicit owner ID. |
-| `/bot-disconnect` | Clear attachment intent and detach. The daemon stays active. |
-| `/bot-status` | Show local state, frontend identity, conversation route, owner, pending input, and last error. |
-| `/bot-new` | Create and reattach a new Pi session for a DM route. Group routes require explicit release and replacement. |
+A saved terminal session automatically registers as a sibling thread when its canonical working directory matches exactly one bound project space and a single owner can be selected. It appears in `/threads` and `list_threads`, can inspect and message scoped peers, and can continue through the bot after a clean terminal exit. It does not replace Main.
 
-All Pi attachments require a saved session. Each conversation has at most one live session; different group conversations can have independent sessions for the same owner. Explicit visible-session DMs use separate owner routes. Group conversations retain their saved session association after disconnect. Telegram `/start` cannot change permissions or pairing. See [project and thread routing](agent-bridge/routing.md).
+There is one Pi command:
+
+```text
+/bot [platform/space/channel] [owner ID]
+```
+
+Without arguments, `/bot` reports the current thread or attempts registration. Supply the space key reported by `/where` when several spaces bind the same directory; supply an owner ID when several owners are configured. Components are URL-encoded, for example `discord/dm%3A123/123`. A saved session cannot move to another project space or replace another thread's history.
+
+There is no public attach/detach/release workflow. Registration requires a saved session file, matching cwd and current binding. IPC registration remains an internal writer lease: only one writer may own each saved session. Unexpected socket/process loss leaves an unconfirmed terminal-writer lease. Reopen that exact saved session and exit cleanly before bot-managed continuation; an uncertain writer is never silently replaced.
+
+Reload restores only the same saved identity. `/new`, `/resume`, and `/fork` never inherit the previous thread selection. A different saved terminal session may register independently in its own matching space. Registration errors do not start an automatic retry loop.
 
 ## Socket path
 
@@ -24,61 +29,56 @@ Pi and the daemon must run as the same local account and use the same path:
 3. `$XDG_DATA_HOME/agent-bridge/agent-bridge.sock`.
 4. `~/.local/share/agent-bridge/agent-bridge.sock`.
 
-## Telegram commands and input
+## Chat commands and targeting
 
-Managed conversations start automatically after Telegram `/bind <directory>`; their exact native JSONL history resumes after restart. The optional Pi commands above still attach a visible session. The daemon handles Telegram messages, albums, commands, and callbacks in each conversation. It sends Pi prepared text and local image-file paths, not raw Telegram updates. Pi converts the files into its content format. Group replies remain anchored in the same project topic and conversation.
+DMs, groups, and forum topics are ordinary bindable project spaces. `/bind ~` is valid in a configured owner's DM.
 
-- `/help` and `/start`: command help.
-- `/new [request]`: start a separate managed conversation without resetting an old thread (explicit visible-session DMs retain reattachment).
-- `/model` and `/thinking`: daemon-rendered menus backed by Pi capabilities.
-- `/status`: Pi model, usage, cost, and context.
-- `/compact`: request compaction when Pi is idle.
-- `/stop`: abort a running turn, including one active during reload.
+- `/help`, `/start`: help; `/where`: directory, space key and user ID.
+- `/bind <directory>`, `/unbind`: owner-only project binding controls.
+- `/new [request]`: a separate saved thread without replacing Main.
+- `/threads`: Main and siblings, including running, idle, starting, stopped and unconfirmed states.
+- `/status`, `/model`, `/thinking`, `/compact`, `/stop`: Main unless sent as a tracked reply, which selects that exact thread. Controls require the configured saved-session owner. They do not create Main merely to inspect or stop it.
 
-Controls bypass slow download/transcription work. Album and voice preparation preserve arrival order. Group conversation controls are restricted to the attachment owner; ordinary members may submit conversation input. Groups and bound DMs use automatic native SDK sessions with parallel tools. `/start` aliases help; `/status` has topic diagnostics; ambiguous controls ask for a conversation reply. `/stop` cancels outstanding media preparation as well as SDK work. See [managed routing](agent-bridge/routing.md).
+Plain input always targets Main. Replies to mapped user or bot messages target their exact saved thread. Unknown explicit targets fail closed; the bot never guesses another conversation. Telegram retains model/thinking menus; the Discord adapter uses textual values.
 
-## Output
+Controls bypass slow media preparation. `/stop` cancels queued startup, input, albums, downloads, authentication and active SDK work without letting late completions reappear. Future input may continue the saved thread. `stop_thread` also unloads the writer. `/unbind` unloads this space's writers while retaining history and associations.
 
-Managed conversations and visible `task_` attachments use explicit communication: `reply_message` publishes user replies and `message_thread` sends peer input. Ordinary assistant text, thinking and tool results stay private. The daemon owns chunking, mentions, typing, operational errors and message mappings. Standalone visible owner-DM attachments retain legacy streaming of acknowledged bot-turn text.
+## Explicit communication and private output
 
-`list_threads`, `peek_thread`, `create_thread(cwd, title, text)`, and `stop_thread` let agents discover, inspect, delegate and unload saved conversations. Finishing a turn does not automatically notify a parent; agents report results explicitly. See [thread tools and provenance](agent-bridge/routing.md).
+All registered threads use `reply_message` to publish user replies and `message_thread` to send peer input. Ordinary assistant text, thinking and tool results remain private in native history, including terminal-native turns. Busy/settled events update status without publishing their content. Completing a delegated turn does not notify its parent automatically: report results explicitly.
 
-## Agent tools and voice
+`list_threads`, `peek_thread`, `create_thread(cwd, title, text)`, and `stop_thread` provide scoped discovery, bounded read-only history, delegation and cancellation. Tools cannot reach another project space. A worker may choose an existing cwd outside the bound repo, including an agent-created worktree.
 
-`bot_attach` resolves relative paths against `ctx.cwd` and requests immediate delivery of absolute local files. The daemon selects the attached conversation's recipient and thread; Pi cannot supply arbitrary chat IDs. Uploads require regular local files of at most 50 MiB, with bounded cancellable reads and at most two simultaneous uploads. The tool works from Telegram and terminal prompts while attached.
+The daemon owns reply anchors, mentions, chunking and message mappings. Every acknowledged outgoing chunk is mapped even if a later chunk fails. Uncertain creation outcomes are not automatically resent, and uncertainty survives IPC error reporting. Terminal anchor publication is claimed persistently before sending; reconnect does not retry a possibly delivered anchor.
 
-The daemon downloads incoming voice messages and executes Whisper with daemon-configured defaults. Prepared prompts include a transcript or failure detail and local attachment paths. Long voice transcripts are truncated in the prompt with a link to their complete private local file.
+## Files and voice
 
-At startup, Pi registers daemon-backed `transcribe_audio` if that tool does not already exist. It accepts a local path and optional model/language overrides, supports cancellation, and truncates tool output at 2000 lines or 50 KiB, saving complete output locally.
+`bot_attach` resolves relative paths against `ctx.cwd` and asks the daemon to send regular local files to the registered thread. Pi cannot supply arbitrary chat IDs. Telegram uploads have a 50 MiB limit, bounded cancellable reads, and at most two simultaneous uploads.
 
-The standalone audio extension captures the active bridge provider before asynchronous validation. While attached it delegates to the daemon; while detached it uses local Whisper. Daemon failures never trigger local fallback. No duplicate transcription tool is registered.
+The Telegram daemon downloads incoming voice and runs Whisper with daemon defaults. Prepared prompts contain a transcript or bounded failure detail and local attachment paths. Long transcripts link to the complete private local file.
 
-## Optional manual session lifecycle
+Pi registers daemon-backed `transcribe_audio` if the tool does not already exist. It accepts model/language overrides and cancellation; output is bounded to 2000 lines or 50 KiB with a complete local file when truncated. The standalone audio extension captures the active bridge provider before asynchronous validation. While registered it delegates to the daemon; otherwise it uses local Whisper. Daemon failures never trigger local fallback. Discord inbound media/voice remains a host-integration limitation documented separately.
 
-The Pi inbox submits prepared input as custom messages with validated opaque turn IDs. It retains input until matching `message_start` acknowledgement, independent of text-transforming input hooks. Asynchronous model/auth preflight and settlement without acknowledgement report delivery failures and release the FIFO without retrying the same message. Custom submission bypasses Pi's `input` and `before_agent_start` hooks; managed bridge instructions are appended to the actual native base prompt, and registered tool prompt guidance applies in both managed and visible sessions. It uses steering during active turns and waits through compaction, including failed compaction. Image-file reads reserve their position before asynchronous work. Unrelated terminal or extension input ends bot attribution before subsequent output.
+## Input and handoff guarantees
 
-After successful `/bot-connect`, validated process memory retains the selected route and owner during lifecycle handoff. Reload can reconnect the same saved group session; switching to a different session cannot silently replace a durable group association. DM routes retain reattachment across `/new`, `/resume`, `/fork`, and `/reload`. Session history never authorizes attachment, and a fresh Pi process starts detached.
+Prepared input reserves a FIFO position before image reads and async model/auth checks. Pi receives custom messages with validated opaque turn IDs and retains them until matching `message_start` acknowledgement. Preflight failure or settlement without acknowledgement reports failure once and releases the FIFO rather than replaying uncertain work. Compaction success and failure both resume delivery after Pi becomes idle. Recorded inputs are not crash-replayed.
 
-Handoff waits for started Pi model changes and requested compaction, then for daemon release acknowledgement or socket closure. Detach has a one-second fallback. Explicit disconnect, quit, failed attachment, and unexpected socket closure clear intent. There is no automatic retry loop after failure.
-
-Detach clears both sides' pending input and reply attribution and cancels daemon preparation, typing, menus and queued previews. Visible task detach also aborts the run and waits for settlement before releasing its saved-session writer; legacy standalone DM work may finish locally, but cannot publish through a new attachment. Manual reconnect waits for old submitted input to settle; active reload holds new input until the old run is idle. Inbox state is not crash-durable.
+Handoff invalidates stale tool/provider captures, clears native and bridge queues, aborts the terminal run, waits for full settlement and started model/compaction mutations, then confirms release to the daemon. Failed queue clearing keeps the handoff barrier closed. Reload cannot register a replacement writer before this barrier completes.
 
 ## IPC limits
 
 | Limit | Value |
 | --- | --- |
 | NDJSON frame | 1 MiB |
-| Attach timeout | 10 seconds |
-| Detach fallback | 1 second |
+| Registration timeout | 10 seconds |
+| Disconnect fallback | 1 second |
 | Tool request timeout | 60 seconds; transcription 6 minutes |
 | Client pending tool calls | 256 |
-| Daemon active tool calls | 32 per attachment; 128 tracked jobs globally |
-| Pending reverse agent commands | 32 per attachment |
+| Daemon active tool calls | 32 per writer; 128 tracked jobs globally |
+| Pending reverse agent commands | 32 per writer |
 | Simultaneous daemon transcriptions | 2 |
-| Pending frontend messages | 64 per attachment |
+| Pending frontend messages | 64 per writer |
 
-Invalid frames, unsolicited reply IDs, timeouts, and socket closure reject pending calls and detach. Request cancellation aborts the exact daemon controller; detach aborts the attachment's requests. Large tool transcripts return a private file reference rather than an oversized frame.
-
-Uncertain Telegram creation outcomes are not automatically resent. Explicit rate-limit rejections may retry. Cancellation cannot undo an upload already accepted by Telegram.
+Invalid frames, unsolicited reply IDs, timeouts and socket closure reject pending calls. Cancellation aborts the exact daemon request. Cancellation cannot undo a send already accepted by a platform.
 
 [Telegram attribution](../src/agent-bridge/telegram/NOTICE.md).

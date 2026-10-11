@@ -189,7 +189,7 @@ test("commands for another bot are ignored; unknown commands keep task routing",
 	expect(normalized(raw).message.route.kind).toBe("start");
 });
 
-test("unknown digit-containing commands remain text, while recognized commands keep their meaning", async () => {
+test("unknown commands, including digit-containing names, do not create or resume threads", async () => {
 	const { adapter, store } = setup();
 	seed(store);
 	for (const [index, name] of ["/foo2", "/help"].entries()) {
@@ -207,8 +207,10 @@ test("unknown digit-containing commands remain text, while recognized commands k
 		update_id: 3,
 		message: command(12, "/test2", { reply_to_message: message(10) }),
 	});
-	expect(store.snapshot().tasks).toHaveLength(1);
-	expect(store.snapshot().inputs).toHaveLength(2);
+	expect(store.snapshot().tasks).toHaveLength(0);
+	expect(store.snapshot().inputs).toHaveLength(0);
+	expect(store.snapshot().outbox).toHaveLength(3);
+	expect(store.nextReply(adapter.transportId)?.text).toContain("Unknown command");
 });
 
 test("unbound topics remain inactive and replayed updates create no duplicates", async () => {
@@ -234,7 +236,8 @@ test("discovery mode does not route tasks or let anyone bind directories", async
 	await adapter.accept({ update_id: 2, message: command(11, "/unbind") });
 	expect(store.binding(topic)).not.toBeNull();
 	await adapter.accept({ update_id: 3, message: command(12, "/where") });
-	expect(store.snapshot().outbox).toHaveLength(2);
+	expect(store.snapshot().outbox).toHaveLength(3);
+	expect(store.snapshot().tasks).toHaveLength(0);
 });
 
 test("mapped reply chains take precedence over mentions",  async () => {
@@ -305,7 +308,7 @@ test("published startup replies recover after a missing send result, but copied 
 			reply_to_message: message(100, { from: { id: 8 }, text: pending.text }),
 		}),
 	});
-	expect(store.snapshot().inputs).toHaveLength(2);
+	expect(store.snapshot().inputs).toHaveLength(1);
   expect(store.taskForMessage({ container: topic, messageId: v.parse(MessageIdSchema, "100") })).toBeNull();
 	await adapter.accept({
 		update_id: 3,
@@ -313,7 +316,7 @@ test("published startup replies recover after a missing send result, but copied 
 			reply_to_message: message(101, { from: { id: 99 }, text: pending.text }),
 		}),
 	});
-	expect(store.snapshot().inputs).toHaveLength(3);
+	expect(store.snapshot().inputs).toHaveLength(2);
 });
 
 test("uncertain reply recovery refuses identical text from distinct conversations", async () => {
@@ -322,7 +325,7 @@ test("uncertain reply recovery refuses identical text from distinct conversation
   const first = await adapter.accept({ update_id: 1, message: mention(10) });
   const second = await adapter.accept({ update_id: 2, message: command(11, "/new second") });
   if (first?.kind !== "routed" || second?.kind !== "routed") throw new Error("Missing conversations");
-  const text = "Only the attachment owner can release this thread.";
+  const text = "Only the saved session owner can control this thread.";
   for (const task of [first.task, second.task, first.task]) {
     store.enqueue({ transportId: adapter.transportId, container: task.container, replyToId: task.rootId, taskId: task.id, text });
   }

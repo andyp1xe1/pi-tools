@@ -8,7 +8,7 @@
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": ["node", "bun"]
   },
   "include": ["extensions/**/*.ts", "src/**/*.ts"],
   "exclude": ["src/agent-bridge"]

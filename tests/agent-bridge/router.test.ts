@@ -216,6 +216,7 @@ test("database symlinks are refused without modifying their targets", () => {
 	try {
 		const target = join(directory, "target");
 		writeFileSync(target, "keep", { mode: 0o644 });
+		chmodSync(target, 0o644); // Make the sentinel independent of the caller's umask.
 		symlinkSync(target, join(directory, "db.sqlite"));
 		expect(() => new Store(join(directory, "db.sqlite"))).toThrow();
 		expect(readFileSync(target, "utf8")).toBe("keep");

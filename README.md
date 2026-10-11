@@ -19,7 +19,7 @@
 | `nix-env-feedback`    | Detects missing commands in bash output. Adds `/cmdstats`.             | [Nix environment feedback](docs/nix-env-feedback.md) |
 | `latex-renderer`      | Renders block LaTeX as images in pi.                                   | [LaTeX renderer](docs/latex-renderer.md)             |
 | `pi-pkm`              | Displays tasks from the builtin, todo.txt, and Emacs agenda providers. | [Pi PKM](docs/pi-pkm.md)                             |
-| `bot`                 | Attaches the current Pi conversation to the bot daemon.                              | [Bot integration](docs/bot.md)                       |
+| `bot`                 | Registers saved terminal sessions as scoped bot project threads.                              | [Bot integration](docs/bot.md)                       |
 | `agent-bridge`        | Maps project topics and conversation threads to Pi sessions. | [Agent bridge](docs/agent-bridge/telegram.md) |
 | `browser-cli`         | Measures pages and interacts with Chrome through a local CLI.          | [Browser CLI](docs/browser-cli.md)                   |
 
@@ -87,7 +87,7 @@ npm run test:extensions
 
 The project's `nix develop` shell supplies flake-selected Node 22, Bun and FFmpeg for reproducible development commands. If those tools already work on your host, ordinary npm checks can run directly; npm scripts use the project's local TypeScript/Biome executables. The shell does not install `node_modules`, activate Home Manager or start the bridge. Installed packages and the user service do not depend on a development shell.
 
-Every extension is a thin entrypoint calling a named registration function. The standalone daemon and Telegram infrastructure live in `src/agent-bridge/`; Pi integration lives in `src/bot/`, reached through `extensions/bot.ts`. Their boundary is a portable, validated IPC client/protocol, not shared Pi or Telegram execution code. See [Code boundaries and bridge lifecycle](docs/architecture.md).
+Every extension is a thin entrypoint calling a named registration function. The standalone daemon and Telegram infrastructure live in `src/agent-bridge/`; Pi integration lives in `src/bot/`, reached through `extensions/bot.ts`. The terminal boundary is a portable, validated IPC client/protocol. Runtime-neutral bot services share saved-thread lifecycle and commands between Telegram and the offline-tested Discord adapter, without importing Pi SDKs. See [Code boundaries and bridge lifecycle](docs/architecture.md).
 
 Run either extension without a session or network access:
 

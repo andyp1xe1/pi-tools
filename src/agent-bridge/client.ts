@@ -100,6 +100,7 @@ export class BridgeClient {
     cwd?: string,
     attachmentToken?: string,
     sessionFile?: string,
+    registration?: { space?: string; name?: string },
   ): Promise<AttachedFrame> {
     if (this.socket) return Promise.reject(new Error("Attachment client cannot be reused"));
     // Validate before opening a socket, including calls made by untyped consumers.
@@ -111,6 +112,7 @@ export class BridgeClient {
       cwd,
       attachmentToken,
       sessionFile,
+      ...registration,
     });
     this.state = "connecting";
     const attached = new Promise<AttachedFrame>((resolve, reject) => {

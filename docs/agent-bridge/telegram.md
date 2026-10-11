@@ -13,7 +13,7 @@ install -m 600 docs/agent-bridge/env.example ~/.config/agent-bridge/env
 
 Set `TELEGRAM_BOT_TOKEN` and `AGENT_BRIDGE_OWNER_IDS` in that file. Keep credentials outside shared checkouts. The configuration must be owned by you and private.
 
-Without owners, the bot reports your ID in a DM or `/where` in a group/topic. Set the reported ID and restart before routing tasks or attaching Pi. No stranger can pair themselves by sending the first message.
+Without owners, the bot reports your ID in a DM or `/where` in a group/topic. Set the reported ID and restart before routing project input or registering terminal sessions. No stranger can pair themselves by sending the first message.
 
 Stop any older Pi Telegram poller before starting this daemon; cross-version lock compatibility is not provided.
 
@@ -34,7 +34,7 @@ programs.pi-tools = {
     # service.environmentFile = "/absolute/private/bridge.env";
     # service.extraPackages = [ pkgs.python3 ];
   };
-  bot.enable = true; # Optional commands for visible Pi attachments
+  bot.enable = true; # Terminal saved-thread registration and communication tools
   audioTranscription.enable = true; # Optional Whisper in the service PATH
 };
 ```
@@ -86,25 +86,19 @@ agent-bridge notify <configured-owner-ID> "The systemd bridge is ready."
 
 It sends a plain DM through the running daemon, confirms only an acknowledged Telegram send, and never retries an uncertain outcome. It does not submit agent input. Other recipients and discovery-mode notifications are refused. Anyone with access to the private local control socket already has user-level bridge administration privileges; this is not a network notification API.
 
-## Optional visible Pi attachments
+## Terminal sibling threads
 
-- `/bot-connect` attaches the current Pi session to the sole configured owner's DM.
-- `/bot-connect <user ID>` selects a DM owner when several are configured.
-- `/bot-connect task_<id> [user ID]` attaches the current session to a group conversation. Pi must run in that conversation's saved working directory (initially the bound project directory).
-- `/bot-disconnect` detaches without stopping the daemon.
-- `/bot-status` reports the attachment state.
-- These are optional host-side commands, not Telegram commands. Normal managed conversations require no terminal attachment.
-- Telegram `/new [request]` creates a separate saved conversation instead of resetting an attached thread.
+Saved terminal sessions automatically register as sibling threads in a uniquely matching bound working directory. They appear in `/threads` and can communicate with scoped peers without replacing Main. Pi `/bot [platform/space/channel] [owner ID]` shows the current thread or disambiguates its project space/owner. `/where` reports the space key; its components are URL-encoded.
 
-A second live attachment for the same conversation is refused. Different group conversations may attach different saved sessions for the same owner. A session associated with a group conversation cannot also attach an owner DM.
+There are no public attachment commands or special owner-DM routes. After a clean terminal exit, bot input can reopen that exact saved session. A second writer is refused. Unexpected loss leaves an unconfirmed writer; reopen that same saved session and exit cleanly before continuing through the bot. Neither session switching nor reload may replace another thread's history.
 
-Explicit visible-session DM inputs received while detached are not queued. Managed conversations start/reopen automatically for new input. Old recorded inputs are never replayed; the live inbox is in-memory, not crash-durable.
+Old recorded inputs are never replayed; the live inbox is not crash-durable. See [Pi integration](../bot.md).
 
 ## Bind a DM, group, or forum topic
 
 Add the same bot to your group. Make it an administrator for message visibility, or disable privacy through BotFather and re-add it.
 
-In the topic to activate:
+In the DM, group, or topic to activate (`/bind ~` is also valid):
 
 ```text
 /bind@YourBot ~/dev/pi-tools
@@ -122,13 +116,13 @@ Unthreaded messages—including voice notes—go to this topic's default convers
 
 The first request starts a native saved Pi session in the bound directory. Replies reopen its exact history after restart. Agents explicitly publish text with `reply_message` and contact peers with `message_thread`; ordinary assistant output stays private. A worker can choose another working directory, including an agent-created worktree. In a bound DM, plain input also goes to its default conversation.
 
-`/new [request]` starts a separate conversation. `/status` works at topic level or as a conversation reply. `/model`, `/thinking`, `/compact`, and `/stop` select the replied conversation or the only active one; otherwise the bot asks you to reply. Controls remain owner-only. `/unbind` cancels startup and live preparation while preserving history.
+`/new [request]` starts a separate saved thread. `/threads` lists Main and siblings with their activity. `/status`, `/model`, `/thinking`, `/compact`, and `/stop` target Main, or the exact thread selected by a tracked reply. They do not select the only active worker or create Main just for a control. Controls require the saved-session owner. Unknown explicit targets fail closed. `/unbind` cancels startup and live preparation while preserving history.
 
 Sessions share normal filesystem access; there are no configured thread limits, project-wide serialization, or automatic worktrees. See [routing details](routing.md).
 
 ## Tools and voice messages
 
-Managed conversations and visible task attachments have `list_threads`, `peek_thread`, `create_thread`, `message_thread`, `stop_thread`, and `reply_message`, plus `bot_attach`, typing, model/thinking pickers, media groups and session controls. Only explicit sends are published; ordinary text, thinking and tool results stay private. Standalone visible owner-DM attachments retain legacy streaming replies. See [routing and tool semantics](routing.md).
+Managed and terminal threads have `list_threads`, `peek_thread`, `create_thread`, `message_thread`, `stop_thread`, and `reply_message`, plus `bot_attach`, typing, model/thinking pickers, media groups and session controls. Only explicit sends are published; ordinary text, thinking and tool results stay private in every project space, including DMs. See [routing and tool semantics](routing.md).
 
 File downloads, sends, and voice transcription go through the daemon. The Pi audio and bot integrations share one `transcribe_audio` implementation; the bot integration supplies it when no audio transcription tool is already registered. Voice preprocessing always uses daemon transcription.
 

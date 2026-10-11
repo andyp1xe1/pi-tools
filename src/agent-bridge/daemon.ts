@@ -22,7 +22,7 @@ import { BotSchema, TelegramUpdateSchema, WebhookSchema } from "./telegram/schem
 
 const USAGE = `agent-bridge
 agent-bridge start     Run the Telegram daemon in the foreground.
-agent-bridge status    Show the bot and attached Pi sessions.
+agent-bridge status    Show the bot and live Pi writers.
 agent-bridge stop      Stop the daemon.
 agent-bridge inspect   Print projects, bindings, tasks, and recorded inputs.
 agent-bridge notify <owner ID> <text>   Send a one-shot owner DM through the running daemon.
@@ -34,8 +34,10 @@ AGENT_BRIDGE_DATABASE overrides the local SQLite path.
 
 Loads $XDG_CONFIG_HOME/agent-bridge/env (default ~/.config/agent-bridge/env).
 Bind a chat/topic with /bind ~/dev/project to start saved native Pi sessions.
-Optionally attach a visible Pi session with /bot-connect task_<id> [owner ID],
-or /bot-connect [owner ID] for its DM. No worktrees are created automatically.`;
+Saved terminal sessions in a uniquely bound working directory join as sibling threads.
+Use Pi /bot [platform/space/channel] [owner ID] to inspect or select a project space.
+Plain messages and controls target Main; replies target their exact saved thread.
+No worktrees are created automatically.`;
 
 async function sleep(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return;
