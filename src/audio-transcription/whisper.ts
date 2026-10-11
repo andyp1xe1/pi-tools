@@ -2,7 +2,13 @@ import { constants } from "node:fs";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, parse } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+export interface WhisperExecutor {
+  exec(
+    command: string,
+    args: string[],
+    options: { signal?: AbortSignal; timeout?: number },
+  ): Promise<{ code: number; stdout: string; stderr: string }>;
+}
 
 export interface WhisperTranscriptionOptions {
   executable?: string;
@@ -28,17 +34,20 @@ export async function findExecutable(name: string): Promise<string | undefined> 
 }
 
 export async function transcribeWithWhisper(
-  pi: ExtensionAPI,
+  pi: WhisperExecutor,
   audioPath: string,
   options: WhisperTranscriptionOptions = {},
 ): Promise<string> {
+  options.signal?.throwIfAborted();
   const executable = options.executable ?? (await findExecutable("whisper"));
+  options.signal?.throwIfAborted();
   if (!executable) throw new Error("Whisper is not available on PATH");
 
   const model = options.model?.trim() || "base";
   const outputDir = await mkdtemp(join(options.tempRoot ?? tmpdir(), "pi-whisper-"));
 
   try {
+    options.signal?.throwIfAborted();
     const args = [audioPath, "--model", model, "--output_dir", outputDir, "--output_format", "txt", "--fp16", "False"];
     if (options.language?.trim()) args.push("--language", options.language.trim());
 
@@ -46,13 +55,14 @@ export async function transcribeWithWhisper(
       signal: options.signal,
       timeout: options.timeoutMs ?? 30 * 60 * 1000,
     });
+    options.signal?.throwIfAborted();
     if (result.code !== 0) {
       const detail = (result.stderr || result.stdout).trim().slice(-2000);
       throw new Error(detail || `Whisper exited with code ${result.code}`);
     }
 
     const transcriptPath = join(outputDir, `${parse(audioPath).name}.txt`);
-    const transcript = (await readFile(transcriptPath, "utf8")).trim();
+    const transcript = (await readFile(transcriptPath, { encoding: "utf8", signal: options.signal })).trim();
     if (!transcript) throw new Error("Whisper produced an empty transcript");
     return transcript;
   } finally {
